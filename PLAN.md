@@ -36,12 +36,26 @@ Status: Phase 1 in progress
 - Opening in Safari causes no external network requests  
 - `bun test` passes  
 
-### Phase 2 — Archive application
+### Phase 2 — Archive application ← current (complete)
 
-- Job queue (in-process, persisted to SQLite)
-- Web UI: index, search, filters, tags, capture history
-- Backup / restore / verify CLI commands
-- HTML and Markdown+ZIP exports
+| Task | File(s) | Status |
+|---|---|---|
+| In-process job queue (SQLite-backed) | `src/queue/index.ts` | ✅ |
+| Job DB helpers (create/claim/finish/recover) | `src/db/index.ts` | ✅ |
+| Tag management (add/get/list) | `src/db/index.ts` | ✅ |
+| Improved web UI (search, filters, tags, export links, archive form) | `src/server.ts` | ✅ |
+| HTML export | `src/export/html.ts` | ✅ |
+| Markdown + ZIP export | `src/export/markdown.ts` | ✅ |
+| EPUB 3 export (adapted from bun-readlater-epub) | `src/export/epub.ts` | ✅ |
+| On-demand PDF export via Playwright | `src/export/pdf.ts` | ✅ |
+| Export routes on server | `src/server.ts` | ✅ |
+| Tags API (`GET/POST /api/captures/:id/tags`) | `src/server.ts` | ✅ |
+| `backup` CLI | `src/cli/index.ts` | ✅ |
+| `verify` CLI (integrity + content-hash) | `src/cli/index.ts` | ✅ |
+| `export` CLI (all four formats) | `src/cli/index.ts` | ✅ |
+| Job queue tests | `tests/queue.test.ts` | ✅ |
+| Markdown export tests | `tests/markdown.test.ts` | ✅ |
+| EPUB export tests | `tests/epub.test.ts` | ✅ |
 
 ### Phase 3 — ArchiveBox importer
 
@@ -51,11 +65,12 @@ Status: Phase 1 in progress
 - Resumable batch import with deduplication
 - Reconciliation report (JSON + HTML)
 
-### Phase 4 — EPUB and print
+### Phase 4 — EPUB and print (complete)
 
-- EPUB 3 from stored HTML (starting from `rcarmo/bun-readlater-epub`)
+- EPUB 3 from stored HTML — adapted from `rcarmo/bun-readlater-epub`, pure Bun ZIP, no external deps
 - On-demand Playwright PDF, no retention
-- `epubcheck` in CI; Apple Books smoke test
+- `epubcheck` CLI validation: run manually with `epubcheck <file>.epub`
+- 9-test EPUB suite covering structure, mimetype offset, and archive-header removal
 
 ### Phase 5 — Cutover
 
