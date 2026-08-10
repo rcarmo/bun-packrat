@@ -220,6 +220,124 @@ export function getCaptureHtml(
 }
 
 // ---------------------------------------------------------------------------
+// Job management
+// ---------------------------------------------------------------------------
+
+export function createJob(
+  db: Database,
+  kind: string,
+  payload: Record<string, unknown>,
+): number {
+  const result = db
+    .query<{ id: number }, any[]>(
+      `INSERT INTO jobs (kind, status, payload) VALUES (?, 'queued', ?) RETURNING id`,
+    )
+    .get(kind, JSON.stringify(payload));
+  if (!result) throw new Error('INSERT jobs returned no id');
+  return result.id;
+}
+
+export function claimNextJob(
+  db: Database,
+  kinds: string[],
+): JobRow | null {
+  // Atomic claim: update status to 'running', return the row
+  const placeholders = kinds.map(() => '?').join(', ');
+  const row = db
+    .query<JobRow, any[]>(
+      `UPDATE jobs SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+         attempt_count = attempt_count + 1,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE id = (
+         SELECT id FROM jobs
+         WHERE status = 'queued' AND kind IN (${placeholders})
+         ORDER BY queued_at ASC
+         LIMIT 1
+       )
+       RETURNING *`,
+    )
+    .get(...kinds);
+  return row ?? null;
+}
+
+export function finishJob(
+  db: Database,
+  id: number,
+  status: 'succeeded' | 'failed',
+  result?: Record<string, unknown>,
+  error?: string,
+): void {
+  db.exec(
+    `UPDATE jobs SET status = ?, result = ?, error = ?,
+       finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+     WHERE id = ?`,
+    [status, result ? JSON.stringify(result) : null, error ?? null, id],
+  );
+}
+
+export function recoverStuckJobs(db: Database): number {
+  // On startup, reset any running jobs back to queued (process may have crashed)
+  const result = db.exec(
+    `UPDATE jobs SET status = 'queued', started_at = NULL,
+       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+     WHERE status = 'running'`,
+  );
+  return (result as any)?.changes ?? 0;
+}
+
+export function getJobById(db: Database, id: number): JobRow | null {
+  return db
+    .query<JobRow, [number]>('SELECT * FROM jobs WHERE id = ?')
+    .get(id) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Tag management
+// ---------------------------------------------------------------------------
+
+export function getOrCreateTag(db: Database, name: string): number {
+  const existing = db
+    .query<{ id: number }, [string]>('SELECT id FROM tags WHERE name = ?')
+    .get(name);
+  if (existing) return existing.id;
+  const created = db
+    .query<{ id: number }, [string]>('INSERT INTO tags (name) VALUES (?) RETURNING id')
+    .get(name);
+  if (!created) throw new Error('INSERT tags failed');
+  return created.id;
+}
+
+export function addTagToCapture(db: Database, captureId: number, tagName: string): void {
+  const tagId = getOrCreateTag(db, tagName);
+  db.exec(
+    'INSERT OR IGNORE INTO capture_tags (capture_id, tag_id) VALUES (?, ?)',
+    [captureId, tagId],
+  );
+}
+
+export function getCaptureTags(db: Database, captureId: number): string[] {
+  return db
+    .query<{ name: string }, [number]>(
+      'SELECT t.name FROM tags t JOIN capture_tags ct ON ct.tag_id = t.id WHERE ct.capture_id = ?',
+    )
+    .all(captureId)
+    .map((r) => r.name);
+}
+
+export function listTags(db: Database): Array<{ name: string; count: number }> {
+  return db
+    .query<{ name: string; count: number }, []>(
+      `SELECT t.name, COUNT(ct.capture_id) as count
+       FROM tags t
+       LEFT JOIN capture_tags ct ON ct.tag_id = t.id
+       GROUP BY t.id
+       ORDER BY count DESC, t.name ASC`,
+    )
+    .all();
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 

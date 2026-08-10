@@ -1,0 +1,125 @@
+/**
+ * bun-packrat — job queue tests
+ */
+
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { openDatabase, runMigrations, createJob, claimNextJob, finishJob, recoverStuckJobs, getJobById } from '../src/db/index.js';
+import type { Database } from 'bun:sqlite';
+
+let db: Database;
+
+beforeEach(() => {
+  db = openDatabase(':memory:');
+  runMigrations(db);
+});
+afterEach(() => db.close());
+
+describe('job lifecycle', () => {
+  test('createJob inserts a queued job and returns an id', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    expect(id).toBeGreaterThan(0);
+
+    const job = getJobById(db, id);
+    expect(job).not.toBeNull();
+    expect(job!.kind).toBe('capture');
+    expect(job!.status).toBe('queued');
+  });
+
+  test('claimNextJob atomically claims the oldest queued job', () => {
+    const id1 = createJob(db, 'capture', { url: 'https://a.example.com/' });
+    const id2 = createJob(db, 'capture', { url: 'https://b.example.com/' });
+
+    const job = claimNextJob(db, ['capture']);
+    expect(job).not.toBeNull();
+    expect(job!.id).toBe(id1); // oldest first
+    expect(job!.status).toBe('running');
+    expect(job!.attempt_count).toBe(1);
+  });
+
+  test('claimNextJob returns null when no queued jobs exist', () => {
+    const job = claimNextJob(db, ['capture']);
+    expect(job).toBeNull();
+  });
+
+  test('claimNextJob does not return a running job', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    const first = claimNextJob(db, ['capture']);
+    expect(first!.id).toBe(id);
+
+    // Second claim should return null (job is now running)
+    const second = claimNextJob(db, ['capture']);
+    expect(second).toBeNull();
+  });
+
+  test('finishJob sets status to succeeded and records result', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    claimNextJob(db, ['capture']);
+    finishJob(db, id, 'succeeded', { captureId: 42 });
+
+    const job = getJobById(db, id);
+    expect(job!.status).toBe('succeeded');
+    expect(job!.result).toContain('captureId');
+    expect(job!.finished_at).not.toBeNull();
+  });
+
+  test('finishJob sets status to failed and records error', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    claimNextJob(db, ['capture']);
+    finishJob(db, id, 'failed', undefined, 'Navigation timeout');
+
+    const job = getJobById(db, id);
+    expect(job!.status).toBe('failed');
+    expect(job!.error).toBe('Navigation timeout');
+  });
+
+  test('recoverStuckJobs resets running jobs to queued', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    claimNextJob(db, ['capture']); // puts it in running state
+
+    // Simulate crash recovery
+    const recovered = recoverStuckJobs(db);
+    expect(recovered).toBe(1);
+
+    const job = getJobById(db, id);
+    expect(job!.status).toBe('queued');
+    expect(job!.started_at).toBeNull();
+  });
+
+  test('recoverStuckJobs returns 0 when no running jobs exist', () => {
+    createJob(db, 'capture', { url: 'https://example.com/' });
+    const recovered = recoverStuckJobs(db);
+    expect(recovered).toBe(0);
+  });
+
+  test('payload is stored and retrievable as JSON', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/test', mode: 'article' });
+    const job = getJobById(db, id);
+    const payload = JSON.parse(job!.payload!);
+    expect(payload.url).toBe('https://example.com/test');
+    expect(payload.mode).toBe('article');
+  });
+});
+
+describe('tag management', () => {
+  test('addTagToCapture and getCaptureTags round-trip', async () => {
+    const { getOrCreateUrl, insertCapture, addTagToCapture, getCaptureTags } = await import('../src/db/index.js');
+
+    const url = getOrCreateUrl(db, 'https://example.com/', 'https://example.com/');
+    const id = insertCapture(db, {
+      url_id: url.id, source_url: 'https://example.com/', final_url: 'https://example.com/',
+      html: null, compression: 'none', content_hash: null, html_size: null,
+      title: 'Tagged', author: null, site_name: null, published_at: null,
+      excerpt: null, lang: null, extracted_text: null,
+      mode: 'article', status: 'succeeded', capture_tool: 'test/0', warnings: null,
+    });
+
+    addTagToCapture(db, id, 'science');
+    addTagToCapture(db, id, 'energy');
+    addTagToCapture(db, id, 'science'); // duplicate — should not double-insert
+
+    const tags = getCaptureTags(db, id);
+    expect(tags).toContain('science');
+    expect(tags).toContain('energy');
+    expect(tags).toHaveLength(2);
+  });
+});
