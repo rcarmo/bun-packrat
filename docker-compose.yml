@@ -1,0 +1,41 @@
+services:
+  packrat:
+    image: packrat:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: packrat
+    restart: unless-stopped
+    ports:
+      - "3047:3047"
+    volumes:
+      # Database and export workspace (required)
+      - ./data:/data
+      # Optional: drop a .env file here to override any environment variable
+      - ./config:/config:ro
+    environment:
+      # Service
+      HOST: "0.0.0.0"
+      PORT: "3047"
+      PACKRAT_BASE_URL: "http://packrat.local"
+
+      # Tuning — override as needed
+      PACKRAT_CAPTURE_TIMEOUT_MS: "60000"
+      PACKRAT_MAX_CONCURRENT_CAPTURES: "2"
+      PACKRAT_HTML_COMPRESSION: "none"   # none | gzip
+      PACKRAT_MAX_PAGE_BYTES: "20971520" # 20 MB
+      PACKRAT_MAX_ASSET_BYTES: "5242880" # 5 MB
+
+      # Run as specific UID:GID (match your host user to avoid permission issues)
+      # PUID: "1000"
+      # PGID: "1000"
+
+    # Chromium needs /dev/shm ≥ 256 MB for stable headless captures
+    shm_size: "256m"
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3047/api/status || exit 1"]
+      interval: 2m
+      timeout: 10s
+      retries: 3
+      start_period: 30s

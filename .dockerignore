@@ -1,0 +1,25 @@
+# Build artifacts
+node_modules/
+out/
+dist/
+
+# Runtime data (never bake live data into image)
+data/
+config/
+tmp/
+*.db
+*.db-wal
+*.db-shm
+
+# Dev / editor
+.env
+*.local
+.DS_Store
+*.swp
+
+# Tests
+tests/
+
+# Git
+.git/
+.gitignore

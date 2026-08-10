@@ -24,6 +24,42 @@ See [PLAN.md](PLAN.md) for the implementation plan.
 
 ## Quick start
 
+### Docker (recommended)
+
+```bash
+# Build and start
+make up
+
+# Or manually:
+docker compose build
+mkdir -p data config
+docker compose up -d
+
+# Open the archive index
+open http://localhost:3047/
+```
+
+Volumes:
+
+| Mount | Purpose |
+|---|---|
+| `./data` | SQLite database (`packrat.db`) — back this up |
+| `./config` | Optional `config/.env` to override environment variables |
+
+Optional `config/.env` example:
+
+```dotenv
+PACKRAT_BASE_URL=http://packrat.local
+PACKRAT_HTML_COMPRESSION=gzip
+PACKRAT_MAX_CONCURRENT_CAPTURES=3
+# PUID=1000
+# PGID=1000
+```
+
+Chromium is baked into the image — no browser download at startup. The image is ~500 MB.
+
+### Local (Bun)
+
 ```bash
 # Install dependencies (Bun required)
 bun install

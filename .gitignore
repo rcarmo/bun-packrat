@@ -1,5 +1,5 @@
 node_modules/
-bun.lock
+# bun.lock is committed so Docker builds are reproducible
 *.db
 *.db-wal
 *.db-shm
