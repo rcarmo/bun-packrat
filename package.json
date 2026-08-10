@@ -1,0 +1,26 @@
+{
+  "name": "bun-packrat",
+  "version": "0.1.0",
+  "description": "Single-file web archive: SQLite-backed, self-contained HTML, iOS Safari compatible",
+  "private": true,
+  "type": "module",
+  "main": "src/server.ts",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "cli": "bun run src/cli/index.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "migrate": "bun run src/db/migrate.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.5.0",
+    "linkedom": "^0.18.9",
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

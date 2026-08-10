@@ -1,0 +1,11 @@
+node_modules/
+bun.lock
+*.db
+*.db-wal
+*.db-shm
+dist/
+out/
+data/
+tmp/
+.env
+*.local
