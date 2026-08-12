@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-12T21:37:27Z
+updated: 2026-08-12T21:38:24Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -64,6 +64,28 @@ The initial deployment has one trusted user on the local network.
 ### Export content
 
 The user chooses HTML, Markdown, EPUB or PDF from an archive entry. HTML streams directly from SQLite. Other formats are produced from the stored HTML and metadata, then streamed to the caller. Temporary export files are removed after delivery.
+
+### Read as Markdown
+
+A capture detail page offers `Archived HTML` and `Markdown` reading modes.
+
+The Markdown mode converts the captured semantic article content to Markdown and renders it as server-generated HTML. It is a view of the stored capture, not a new persistent representation.
+
+Images in Markdown mode reference their original absolute HTTP or HTTPS URLs instead of embedded `data:` URLs or extracted local assets. To support this view:
+
+- the capture pipeline records the original resolved URL for every image before replacing its `src` with a `data:` URL;
+- the original image URL mapping is stored in SQLite as capture metadata;
+- Markdown image syntax uses the original URL: `![alt text](https://original.example/image.jpg)`;
+- `srcset` candidates resolve to one preferred original image URL, favouring the largest suitable candidate when dimensions are available;
+- duplicate original image URLs may share one metadata entry, but document order remains reproducible;
+- image alt text and optional title text are preserved;
+- when no valid original HTTP or HTTPS URL exists, Markdown mode omits the image or shows its alt text and records the omission in the capture warnings;
+- Markdown mode never substitutes the embedded `data:` URL into generated Markdown;
+- the generated Markdown and rendered view contain no capture cookies, authorisation headers, signed request headers or local file paths.
+
+Markdown mode is an explicit online view. Opening it may contact the original image hosts and disclose the reader's IP address, browser headers and referrer policy. The UI displays this warning before enabling remote images. Remote images are disabled until the user enables them for the current view. The ordinary archived HTML view remains fully offline and makes no external requests.
+
+The server can return either rendered Markdown HTML or raw Markdown from the same stored capture. Neither response is cached permanently.
 
 ### Delete a capture
 
@@ -171,6 +193,8 @@ The archive UI must provide:
 - URL, domain, title, tag, date, status and capture-mode filters;
 - newest, oldest and relevance sorting;
 - capture detail and provenance;
+- archived HTML and Markdown reading modes;
+- an explicit control and privacy warning before Markdown mode loads original remote images;
 - duplicate and failed-import views;
 - export actions;
 - recapture action;
@@ -208,6 +232,8 @@ GET    /api/captures              search, filter, sort and page captures
 GET    /api/captures/:id          retrieve metadata
 DELETE /api/captures/:id          delete one capture after explicit confirmation
 GET    /captures/:id              view archived HTML
+GET    /captures/:id/markdown     view server-rendered Markdown
+GET    /captures/:id/markdown.raw retrieve raw Markdown with original image URLs
 GET    /captures/:id/export/html  download HTML
 GET    /captures/:id/export/md    download Markdown and assets as ZIP
 GET    /captures/:id/export/epub  generate and download EPUB
@@ -341,7 +367,7 @@ The HTML export is byte-equivalent to the uncompressed canonical document, apart
 
 ### Markdown plus assets
 
-The exporter parses the stored HTML DOM, extracts embedded data URLs into an `assets/` directory, converts semantic content to Markdown and writes relative asset links. It returns a ZIP containing:
+The downloadable Markdown ZIP remains an offline export and differs from the Markdown reading mode. The exporter parses the stored HTML DOM, extracts embedded data URLs into an `assets/` directory, converts semantic content to Markdown and writes relative asset links. It returns a ZIP containing:
 
 ```text
 article.md
@@ -446,6 +472,15 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [ ] The final reconciliation report matches the source snapshot count.
 - [ ] A statistically useful sample from each source format opens successfully on iOS and desktop browsers.
 - [ ] ArchiveBox is not retired until the imported database has been backed up and restored on a clean instance.
+
+### Markdown reading mode
+
+- [ ] Every newly captured image records its original resolved HTTP or HTTPS URL before inlining.
+- [ ] Capture details can switch between archived HTML and server-rendered Markdown.
+- [ ] Raw Markdown references original image URLs and contains no embedded data URLs or local asset paths.
+- [ ] Remote images remain disabled until the user accepts the network and privacy warning for that view.
+- [ ] The offline Markdown ZIP continues to contain local relative asset references.
+- [ ] Missing or invalid original image URLs produce deterministic alt-text output and a capture warning.
 
 ### Article list sorting and pagination
 
