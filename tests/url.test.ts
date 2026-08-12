@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { normaliseUrl, guardSsrf, UrlValidationError } from '../src/capture/url.js';
+import { normaliseUrl, guardSsrf, guardSsrfResolved, isBlockedAddress, UrlValidationError } from '../src/capture/url.js';
 
 describe('normaliseUrl', () => {
   test('returns the URL unchanged when clean', () => {
@@ -49,6 +49,10 @@ describe('normaliseUrl', () => {
     expect(() => normaliseUrl('file:///etc/passwd')).toThrow(UrlValidationError);
     expect(() => normaliseUrl('javascript:alert(1)')).toThrow(UrlValidationError);
   });
+
+  test('rejects URLs containing embedded credentials', () => {
+    expect(() => normaliseUrl('https://user:secret@example.com/')).toThrow(UrlValidationError);
+  });
 });
 
 describe('guardSsrf', () => {
@@ -79,5 +83,15 @@ describe('guardSsrf', () => {
 
   test('allows an explicitly allow-listed private host', () => {
     expect(() => guardSsrf('http://192.168.1.100/', ['192.168.1.100'])).not.toThrow();
+  });
+
+  test('blocks additional reserved address ranges', () => {
+    for (const address of ['0.1.2.3', '100.64.0.1', '192.0.2.1', '198.18.0.1', '224.0.0.1', '::', 'ff02::1']) {
+      expect(isBlockedAddress(address)).toBe(true);
+    }
+  });
+
+  test('resolved guard accepts a normal public hostname', async () => {
+    await expect(guardSsrfResolved('https://example.com/')).resolves.toBeUndefined();
   });
 });

@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import type { PackratConfig, CaptureResult } from '../types.js';
-import { normaliseUrl, guardSsrf, UrlValidationError } from './url.js';
+import { normaliseUrl, guardSsrfResolved, UrlValidationError } from './url.js';
 import { extractContent } from './extract.js';
 import { sanitizeHtml } from './sanitize.js';
 import { inlineAssets } from './assets.js';
@@ -19,11 +19,14 @@ import {
   insertCapture,
   updateCaptureStatus,
   updateLatestCapture,
+  findRecentCapture,
+  addCaptureAlias,
 } from '../db/index.js';
 
 export interface PipelineOptions {
   config: PackratConfig;
   db: Database;
+  force?: boolean;
 }
 
 const TOOL_VERSION = 'packrat/0.1.0';
@@ -57,18 +60,37 @@ export async function capturePage(
   opts: PipelineOptions,
 ): Promise<CaptureResult> {
   const { config, db } = opts;
+  const startedAt = performance.now();
 
   // 1. Validate and normalise URL
   let normalisedUrl: string;
   try {
     normalisedUrl = normaliseUrl(rawUrl);
-    guardSsrf(normalisedUrl);
+    await guardSsrfResolved(normalisedUrl);
   } catch (err) {
     if (err instanceof UrlValidationError) throw err;
     throw new Error(`URL validation failed: ${err}`);
   }
 
-  // 2. Create a capture row in pending state
+  // 2. Reuse a fresh successful capture unless the caller explicitly asks
+  // for a recapture.
+  if (!opts.force) {
+    const recent = findRecentCapture(db, normalisedUrl, config.freshnessSeconds);
+    if (recent) {
+      return {
+        captureId: recent.id,
+        mode: recent.mode,
+        title: recent.title,
+        sourceUrl: recent.source_url,
+        finalUrl: recent.final_url,
+        contentHash: recent.content_hash ?? '',
+        htmlSize: recent.html_size ?? 0,
+        warnings: recent.warnings ? JSON.parse(recent.warnings) : [],
+      };
+    }
+  }
+
+  // 3. Create a capture row in pending state
   const urlRow = getOrCreateUrl(db, normalisedUrl, rawUrl);
   const captureId = insertCapture(db, {
     url_id: urlRow.id,
@@ -95,7 +117,7 @@ export async function capturePage(
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {
-    // 3. Launch browser
+    // 4. Launch browser
     browser = await chromium.launch({
       headless: true,
       executablePath: findChromiumExecutable(config.playwrightBrowsersPath),
@@ -112,9 +134,33 @@ export async function capturePage(
     page.setDefaultNavigationTimeout(config.captureTimeoutMs);
     page.setDefaultTimeout(config.captureTimeoutMs);
 
+    // Validate DNS for every browser request, not just the submitted URL.
+    // This blocks pages from using scripts/images/fetches as an SSRF proxy.
+    // Cache one decision per origin to avoid repeating DNS lookups.
+    const originGuards = new Map<string, Promise<void>>();
+    await page.route('**/*', async (route) => {
+      const requestUrl = route.request().url();
+      if (!requestUrl.startsWith('http://') && !requestUrl.startsWith('https://')) {
+        await route.continue();
+        return;
+      }
+      try {
+        const origin = new URL(requestUrl).origin;
+        let guard = originGuards.get(origin);
+        if (!guard) {
+          guard = guardSsrfResolved(requestUrl);
+          originGuards.set(origin, guard);
+        }
+        await guard;
+        await route.continue();
+      } catch {
+        await route.abort('blockedbyclient');
+      }
+    });
+
     // 4. Navigate
     const response = await page.goto(normalisedUrl, {
-      waitUntil: 'networkidle',
+      waitUntil: config.captureWaitUntil,
       timeout: config.captureTimeoutMs,
     });
 
@@ -123,11 +169,14 @@ export async function capturePage(
     }
 
     const finalUrl = page.url();
+    await guardSsrfResolved(finalUrl);
     const httpStatus = response.status();
 
     if (httpStatus >= 400) {
       warnings.push(`HTTP ${httpStatus} response for ${finalUrl}`);
     }
+
+    if (config.captureSettlingMs > 0) await page.waitForTimeout(config.captureSettlingMs);
 
     // 5. Dismiss overlays and scroll for lazy content
     await page.evaluate(DISMISS_OVERLAYS_JS).catch(() => {});
@@ -137,6 +186,10 @@ export async function capturePage(
     const renderedHtml = await page.content();
 
     await context.close();
+
+    if (Buffer.byteLength(renderedHtml, 'utf-8') > config.maxPageSizeBytes * 2) {
+      throw new Error('Rendered page exceeds the configured capture size budget');
+    }
 
     // 7. Extract article content
     const extracted = extractContent(renderedHtml, finalUrl);
@@ -174,11 +227,11 @@ export async function capturePage(
       captureTool: TOOL_VERSION,
     });
 
-    // Size guard
+    // Size guard: fail explicitly rather than storing an oversized body.
     const htmlBytes = Buffer.from(finalHtml, 'utf-8');
     if (htmlBytes.byteLength > config.maxPageSizeBytes) {
-      warnings.push(
-        `Captured page exceeds max size (${htmlBytes.byteLength} > ${config.maxPageSizeBytes} bytes); clamped`,
+      throw new Error(
+        `Captured page exceeds max size (${htmlBytes.byteLength} > ${config.maxPageSizeBytes} bytes)`,
       );
     }
 
@@ -195,8 +248,10 @@ export async function capturePage(
       compression = 'gzip';
     }
 
-    // 13. Write to database
-    db.exec(
+    // 13. Commit the canonical body, metadata, URL pointer and aliases as one
+    // transaction so readers never observe a partially completed capture.
+    db.transaction(() => {
+      db.exec(
       `UPDATE captures SET
          final_url = ?,
          html = ?,
@@ -213,6 +268,7 @@ export async function capturePage(
          mode = ?,
          status = 'succeeded',
          warnings = ?,
+         capture_duration_ms = ?,
          updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE id = ?`,
       [
@@ -230,11 +286,14 @@ export async function capturePage(
         extracted.extractedText,
         extracted.mode,
         warnings.length > 0 ? JSON.stringify(warnings) : null,
+        Math.round(performance.now() - startedAt),
         captureId,
       ],
-    );
-
-    updateLatestCapture(db, urlRow.id, captureId);
+      );
+      updateLatestCapture(db, urlRow.id, captureId);
+      addCaptureAlias(db, captureId, rawUrl, 'original');
+      if (finalUrl !== rawUrl) addCaptureAlias(db, captureId, finalUrl, 'redirect');
+    })();
 
     const result: CaptureResult = {
       captureId,
@@ -300,19 +359,23 @@ async function scrollPage(page: any): Promise<void> {
 }
 
 /** Find the chromium executable in the browsers path */
-function findChromiumExecutable(browsersPath: string): string {
+export function findChromiumExecutable(browsersPath: string): string | undefined {
   // Playwright browser path convention: <browsersPath>/chromium-*/chrome-linux64/chrome
   try {
     const { readdirSync } = require('fs');
     const { join } = require('path');
     const dirs = readdirSync(browsersPath);
-    const chromiumDir = dirs.find((d: string) => d.startsWith('chromium-'));
-    if (chromiumDir) {
-      return join(browsersPath, chromiumDir, 'chrome-linux64', 'chrome');
+    const candidates = dirs
+      .filter((d: string) => d.startsWith('chromium-'))
+      .sort((a: string, b: string) => b.localeCompare(a, undefined, { numeric: true }));
+    for (const chromiumDir of candidates) {
+      const executable = join(browsersPath, chromiumDir, 'chrome-linux64', 'chrome');
+      if (require('fs').existsSync(executable)) return executable;
     }
   } catch {
     // Fall through — let Playwright find it via its own mechanism
   }
-  // Let Playwright use its default discovery
-  return '';
+  // Let Playwright use its default discovery. Passing an empty string makes
+  // Chromium try to execute the current directory and fail cryptically.
+  return undefined;
 }

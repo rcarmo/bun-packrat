@@ -87,9 +87,10 @@ async function buildEpubZip(entries: ZipEntry[]): Promise<Uint8Array> {
     const cv = new DataView(c.buffer);
     cv.setUint32(0, 0x02014b50, true);
     cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
-    cv.setUint16(8, method, true);
-    cv.setUint16(10, now.dosTime, true);
-    cv.setUint16(12, now.dosDate, true);
+    cv.setUint16(8, 0, true); // general-purpose flags
+    cv.setUint16(10, method, true);
+    cv.setUint16(12, now.dosTime, true);
+    cv.setUint16(14, now.dosDate, true);
     cv.setUint32(16, crc, true);
     cv.setUint32(20, data.length, true);
     cv.setUint32(24, data.length, true);
@@ -149,6 +150,7 @@ interface ParsedCapture {
   lang: string;
   bodyHtml: string;
   assets: EpubAsset[];
+  coverAssetId: string | null;
 }
 
 function parseStoredHtml(htmlStr: string): ParsedCapture {
@@ -195,8 +197,9 @@ function parseStoredHtml(htmlStr: string): ParsedCapture {
   bodySource.querySelector?.('.packrat-header')?.remove?.();
 
   const bodyHtml = bodySource.innerHTML ?? '';
+  const coverAssetId = assets.find((asset) => asset.mediaType !== 'image/svg+xml')?.id ?? null;
 
-  return { title, author, lang, bodyHtml, assets };
+  return { title, author, lang, bodyHtml, assets, coverAssetId };
 }
 
 function mimeToExt(mime: string): string {
@@ -220,7 +223,7 @@ function buildContentOpf(
 ): string {
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   const manifestAssets = parsed.assets
-    .map((a) => `    <item id="${esc(a.id)}" href="${esc(a.href)}" media-type="${esc(a.mediaType)}" />`)
+    .map((a) => `    <item id="${esc(a.id)}" href="${esc(a.href)}" media-type="${esc(a.mediaType)}"${a.id === parsed.coverAssetId ? ' properties="cover-image"' : ''} />`)
     .join('\n');
 
   return `<?xml version="1.0" encoding="utf-8"?>
@@ -231,6 +234,7 @@ function buildContentOpf(
     <dc:language>${esc(parsed.lang)}</dc:language>
     ${parsed.author ? `<dc:creator>${esc(parsed.author)}</dc:creator>` : ''}
     ${publishedAt ? `<dc:date>${esc(publishedAt)}</dc:date>` : ''}
+    ${parsed.coverAssetId ? `<meta name="cover" content="${esc(parsed.coverAssetId)}" />` : ''}
     <meta property="dcterms:modified">${modified}</meta>
     <dc:source>${esc(sourceUrl)}</dc:source>
   </metadata>
@@ -304,7 +308,7 @@ export async function exportEpub(
 
   let htmlBytes: Buffer;
   if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(row.html as unknown as Uint8Array));
+    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
   } else {
     htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
   }
@@ -327,7 +331,7 @@ export async function exportEpub(
     },
     {
       name: 'OEBPS/content.opf',
-      data: enc.encode(buildContentOpf(parsed, meta.source_url, meta.published_at, identifier)),
+      data: enc.encode(buildContentOpf(parsed, meta.source_url, meta.captured_at, identifier)),
     },
     { name: 'OEBPS/nav.xhtml', data: enc.encode(buildNav(parsed.title)) },
     { name: 'OEBPS/article.xhtml', data: enc.encode(buildArticleXhtml(parsed, meta.source_url)) },

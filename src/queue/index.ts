@@ -15,7 +15,6 @@ import {
   claimNextJob,
   finishJob,
   recoverStuckJobs,
-  getCaptureById,
 } from '../db/index.js';
 import { capturePage } from '../capture/pipeline.js';
 
@@ -59,6 +58,7 @@ export class JobQueue {
 
     this.stopping = false;
     this.timer = setInterval(() => this.poll(), this.pollIntervalMs);
+    this.poll();
     console.log(JSON.stringify({ event: 'queue.started', pollIntervalMs: this.pollIntervalMs }));
   }
 
@@ -130,7 +130,11 @@ export class JobQueue {
     const url = payload.url as string;
     if (!url) throw new Error('capture job missing url in payload');
 
-    const result = await capturePage(url, { config: this.config, db: this.db });
+    const result = await capturePage(url, {
+      config: this.config,
+      db: this.db,
+      force: payload.force === true,
+    });
 
     // Link the job to its capture
     this.db.exec('UPDATE jobs SET capture_id = ? WHERE id = ?', [result.captureId, jobId]);

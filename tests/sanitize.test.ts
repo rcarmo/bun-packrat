@@ -155,4 +155,31 @@ describe('sanitizeHtml', () => {
     expect(html).toContain('decoding="async"');
     expect(html).not.toContain('loading="lazy"');
   });
+
+  test('removes author style and external stylesheet dependencies', () => {
+    const { html } = sanitizeHtml(
+      '<html><head><link rel="stylesheet" href="https://cdn.example.com/a.css"><style>body{background:url(https://cdn.example.com/x)}</style></head><body><p>Safe</p></body></html>',
+    );
+    expect(html).not.toContain('<link');
+    expect(html).not.toContain('<style');
+    expect(html).not.toContain('cdn.example.com');
+  });
+
+  test('only permits safe image data URLs', () => {
+    const { html, warnings } = sanitizeHtml(
+      '<html><body><img src="data:image/svg+xml;base64,PHN2Zy8+"><img src="https://example.com/a.png"></body></html>',
+    );
+    expect(html).not.toContain('image/svg+xml');
+    expect(html).not.toContain('https://example.com/a.png');
+    expect(warnings.filter((w) => w.includes('non-inline image source')).length).toBe(2);
+  });
+
+  test('blocks active and embedded link schemes', () => {
+    const { html } = sanitizeHtml(
+      '<html><body><a href="data:text/html,evil">data</a><a href="blob:https://example.com/x">blob</a><a href="https://example.com/">safe</a></body></html>',
+    );
+    expect(html).not.toContain('data:text/html');
+    expect(html).not.toContain('blob:https');
+    expect(html).toContain('https://example.com/');
+  });
 });

@@ -44,7 +44,7 @@ switch (command) {
     if (!url) { console.error('Usage: packrat capture <url>'); process.exit(1); }
     console.error(`[capture] Archiving: ${url}`);
     try {
-      const result = await capturePage(url, { config, db });
+      const result = await capturePage(url, { config, db, force: args.includes('--force') });
       console.log(JSON.stringify({
         ok: true, captureId: result.captureId,
         url: `${config.baseUrl}/captures/${result.captureId}`,
@@ -61,9 +61,23 @@ switch (command) {
 
   // ── search ───────────────────────────────────────────────────────────────
   case 'search': {
-    const query = args.slice(1).join(' ');
+    const filterNames = new Set(['--domain', '--tag', '--mode', '--status', '--sort', '--limit']);
+    const queryParts: string[] = [];
+    for (let i = 1; i < args.length; i++) {
+      if (filterNames.has(args[i])) { i++; continue; }
+      if (!args[i].startsWith('--')) queryParts.push(args[i]);
+    }
+    const query = queryParts.join(' ');
     if (!query) { console.error('Usage: packrat search <query>'); process.exit(1); }
-    console.log(JSON.stringify(searchCaptures(db, query, { limit: 50 }).map(summarise), null, 2));
+    const sortArg = optionValue(args, '--sort');
+    const sort = sortArg === 'oldest' || sortArg === 'newest' ? sortArg : 'relevance';
+    console.log(JSON.stringify(searchCaptures(db, query, {
+      limit: boundedInt(optionValue(args, '--limit'), 50, 1, 200), sort,
+      status: optionValue(args, '--status') ?? undefined,
+      mode: optionValue(args, '--mode') ?? undefined,
+      domain: optionValue(args, '--domain') ?? undefined,
+      tag: optionValue(args, '--tag') ?? undefined,
+    }).map(summarise), null, 2));
     break;
   }
 
@@ -181,7 +195,7 @@ switch (command) {
       if (!c?.content_hash || !c?.html) continue;
       const raw: Buffer =
         c.compression === 'gzip'
-          ? Buffer.from(Bun.gunzipSync(c.html as Uint8Array))
+          ? Buffer.from(Bun.gunzipSync(Buffer.from(c.html)))
           : Buffer.from(c.html as Uint8Array);
       const actual = createHash('sha256').update(raw).digest('hex');
       if (actual === c.content_hash) {
@@ -215,16 +229,16 @@ switch (command) {
     const stats = db
       .query<{ total: number; succeeded: number; failed: number; pending: number }, []>(`
         SELECT COUNT(*) as total,
-          SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END) as succeeded,
-          SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
-          SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending
+          COALESCE(SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END),0) as succeeded,
+          COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) as failed,
+          COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END),0) as pending
         FROM captures`)
       .get() ?? { total: 0, succeeded: 0, failed: 0, pending: 0 };
 
     const jobs = db
       .query<{ queued: number; running: number }, []>(`
-        SELECT SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) as queued,
-               SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) as running
+        SELECT COALESCE(SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END),0) as queued,
+               COALESCE(SUM(CASE WHEN status='running' THEN 1 ELSE 0 END),0) as running
         FROM jobs WHERE kind='capture'`)
       .get() ?? { queued: 0, running: 0 };
 
@@ -249,6 +263,17 @@ db.close();
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+function optionValue(argv: string[], name: string): string | null {
+  const index = argv.indexOf(name);
+  return index >= 0 && argv[index + 1] ? argv[index + 1] : null;
+}
+
+function boundedInt(raw: string | null, fallback: number, min: number, max: number): number {
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
+}
+
 function summarise(c: any) {
   return {
     id: c.id, title: c.title, mode: c.mode, status: c.status,
@@ -263,8 +288,9 @@ bun-packrat — single-file web archive CLI
 Usage: bun run src/cli/index.ts <command> [args]
 
 Commands:
-  capture <url>                      Archive a URL (blocking)
-  search  <query>                    Full-text search captures
+  capture <url> [--force]            Archive a URL; --force bypasses freshness reuse
+  search  <query> [filters]          Full-text search captures
+          --domain --tag --mode --status --sort relevance|newest|oldest
   list    [--limit N]                List recent successful captures (default 20)
   export  <id> --format <fmt>        Export a capture
                 --format html|md|epub|pdf
@@ -283,5 +309,6 @@ Environment:
   PACKRAT_CAPTURE_TIMEOUT_MS   Capture timeout ms    (60000)
   PACKRAT_HTML_COMPRESSION     none | gzip           (none)
   PACKRAT_BASE_URL             Service base URL      (http://localhost:3047)
+  PACKRAT_FRESHNESS_SECONDS    Recent capture reuse  (86400)
 `);
 }

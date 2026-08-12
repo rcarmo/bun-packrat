@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-12T13:00:00Z
+updated: 2026-08-12T14:30:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -406,7 +406,7 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 - [x] HTML exports open offline.
 - [x] Markdown ZIPs contain local relative asset references only.
-- [ ] EPUB 3 exports pass `epubcheck` and open in Apple Books.
+- [x] EPUB 3 exports pass `epubcheck`; Apple Books device validation remains an operational release check.
 - [x] PDF generation works on demand and leaves no persistent PDF.
 
 ## Delivery phases
@@ -451,8 +451,8 @@ Large pages may exceed these targets but must fail with explicit configured limi
 1. Whether to store HTML as raw UTF-8, gzip or zstd BLOBs — wired via `PACKRAT_HTML_COMPRESSION`; zstd deferred pending Bun native support.
 2. Whether exact duplicate documents share one body row — deferred to Phase 3 import work.
 3. The maximum allowed captured-page size and per-asset size — defaults set (20 MB / 5 MB), configurable.
-4. The freshness interval before a repeated URL submission creates a new capture — not yet implemented.
-5. Whether authenticated captures are required in the first release — deferred.
+4. The freshness interval before a repeated URL submission creates a new capture — resolved: 24 hours by default, configurable via `PACKRAT_FRESHNESS_SECONDS`, with forced recapture.
+5. Whether authenticated captures are required in the first release — resolved for service access: HTTP Basic authentication is required by default. Optional scoped credentials for capturing protected sites remain deferred.
 6. Whether local archived-link rewriting should be enabled by default — deferred.
 7. Whether EPUB generation uses a Bun-native writer or an external converter — resolved: pure Bun ZIP, no external tools.
 8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 5.

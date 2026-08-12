@@ -97,6 +97,7 @@ describe('Phase 1 pipeline proof', () => {
     expect(result).toContain('packrat:source-url');
     expect(result).toContain('packrat:captured-at');
     expect(result).toContain('Jane Smith');
+    expect(result).toContain('name="packrat:author" content="Jane Smith"');
     expect(result).toContain('Test Article');
     expect(result).toContain('This is the article body.');
     // No external dependencies

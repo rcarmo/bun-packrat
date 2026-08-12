@@ -2,6 +2,9 @@
  * bun-packrat — URL normalisation and SSRF guard
  */
 
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+
 /** Tracking/noise query parameters to strip */
 const STRIP_PARAMS = new Set([
   'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
@@ -54,6 +57,10 @@ export function normaliseUrl(rawUrl: string): string {
     );
   }
 
+  if (url.username || url.password) {
+    throw new UrlValidationError('URLs containing embedded credentials are not allowed');
+  }
+
   // Lowercase hostname
   url.hostname = url.hostname.toLowerCase();
 
@@ -89,16 +96,81 @@ export function guardSsrf(
     throw new UrlValidationError(`Cannot parse URL for SSRF check: ${url}`);
   }
 
-  const hostname = parsed.hostname;
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
 
   // Allow-list takes precedence
   if (allowList.includes(hostname)) return;
 
-  for (const pattern of BLOCKED_PATTERNS) {
-    if (pattern.test(hostname)) {
+  if (isBlockedAddress(hostname)) {
+    throw new UrlValidationError(
+      `URL targets a private or reserved address and is not on the allow-list: ${hostname}`,
+    );
+  }
+}
+
+/** Resolve a hostname and reject any non-public result. Call this for every
+ * navigation/fetch, including redirects, to prevent DNS-based SSRF. */
+export async function guardSsrfResolved(
+  url: string,
+  allowList: string[] = [],
+): Promise<void> {
+  guardSsrf(url, allowList);
+  const parsed = new URL(url);
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (allowList.includes(hostname) || isIP(hostname)) return;
+
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(hostname, { all: true, verbatim: true });
+  } catch (err: any) {
+    throw new UrlValidationError(`Could not resolve hostname ${hostname}: ${err?.message ?? err}`);
+  }
+  if (addresses.length === 0) {
+    throw new UrlValidationError(`Hostname resolved to no addresses: ${hostname}`);
+  }
+  for (const { address } of addresses) {
+    if (isBlockedAddress(address)) {
       throw new UrlValidationError(
-        `URL targets a private or reserved address and is not on the allow-list: ${hostname}`,
+        `Hostname ${hostname} resolves to a private or reserved address: ${address}`,
       );
     }
   }
+}
+
+export function isBlockedAddress(input: string): boolean {
+  const address = input.toLowerCase().replace(/^\[|\]$/g, '');
+  for (const pattern of BLOCKED_PATTERNS) {
+    if (pattern.test(address)) return true;
+  }
+
+  // Additional non-public IPv4 ranges.
+  const v4 = address.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number);
+    if ([a, b, c, d].some((n) => n > 255)) return true;
+    return (
+      a === 0 || a === 10 || a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 0) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224
+    );
+  }
+
+  // Non-public IPv6: unspecified/loopback, IPv4-mapped, ULA, link-local,
+  // multicast and documentation prefixes.
+  if (address.includes(':')) {
+    return (
+      address === '::' || address === '::1' ||
+      address.startsWith('::ffff:') ||
+      address.startsWith('fc') || address.startsWith('fd') ||
+      /^fe[89ab]/.test(address) || address.startsWith('ff') ||
+      address.startsWith('2001:db8:')
+    );
+  }
+
+  return false;
 }

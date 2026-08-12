@@ -47,6 +47,8 @@ export function runMigrations(db: Database): void {
   const migrationsDir = join(__dirname, 'migrations');
   const migrations = [
     { version: 1, file: '001_initial.sql' },
+    { version: 2, file: '002_constraints.sql' },
+    { version: 3, file: '003_application_features.sql' },
   ];
 
   for (const { version, file } of migrations) {
@@ -59,9 +61,9 @@ export function runMigrations(db: Database): void {
 
     const sql = readFileSync(sqlPath, 'utf-8');
 
-    // Run the migration — split on semicolons for multi-statement scripts
-    // but use exec() which handles multiple statements
-    db.exec(sql);
+    // Each migration is atomic. SQLite supports transactional DDL for the
+    // statements used here; the migration records its own version row.
+    db.transaction(() => db.exec(sql))();
 
     console.log(`[db] Applied migration ${version}: ${file}`);
   }
@@ -85,7 +87,7 @@ export function getOrCreateUrl(
   if (existing) return existing;
 
   db.exec(
-    'INSERT INTO urls (normalised, original, domain) VALUES (?, ?, ?)',
+    'INSERT OR IGNORE INTO urls (normalised, original, domain) VALUES (?, ?, ?)',
     [normalised, original, domain],
   );
 
@@ -96,7 +98,7 @@ export function getOrCreateUrl(
 
 export function insertCapture(
   db: Database,
-  row: Omit<CaptureRow, 'id' | 'created_at' | 'updated_at' | 'captured_at'>,
+  row: Omit<CaptureRow, 'id' | 'created_at' | 'updated_at' | 'captured_at' | 'error' | 'note' | 'capture_duration_ms'>,
 ): number {
   const result = db
     .query<{ id: number }, any[]>(`
@@ -145,7 +147,7 @@ export function updateCaptureStatus(
   error?: string,
 ): void {
   db.exec(
-    `UPDATE captures SET status = ?, warnings = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
+    `UPDATE captures SET status = ?, error = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
     [status, error ?? null, id],
   );
 }
@@ -167,53 +169,98 @@ export function getCaptureById(db: Database, id: number): CaptureRow | null {
     .get(id) ?? null;
 }
 
-export function listCaptures(
-  db: Database,
-  opts: { limit?: number; offset?: number; status?: string } = {},
-): CaptureRow[] {
-  const limit = opts.limit ?? 50;
-  const offset = opts.offset ?? 0;
-  const status = opts.status ?? 'succeeded';
+export interface CaptureQueryOptions {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  mode?: string;
+  domain?: string;
+  title?: string;
+  tag?: string;
+  url?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sort?: 'newest' | 'oldest' | 'relevance';
+}
 
-  return db
-    .query<CaptureRow, [string, number, number]>(
-      `SELECT c.*, u.domain
-       FROM captures c
-       JOIN urls u ON u.id = c.url_id
-       WHERE c.status = ?
-       ORDER BY c.captured_at DESC
-       LIMIT ? OFFSET ?`,
-    )
-    .all(status, limit, offset);
+export function listCaptures(db: Database, opts: CaptureQueryOptions = {}): CaptureRow[] {
+  return queryCaptures(db, null, opts);
 }
 
 export function searchCaptures(
   db: Database,
   query: string,
-  opts: { limit?: number; offset?: number } = {},
+  opts: CaptureQueryOptions = {},
 ): CaptureRow[] {
-  const limit = opts.limit ?? 50;
-  const offset = opts.offset ?? 0;
+  return queryCaptures(db, query, opts);
+}
 
-  return db
-    .query<CaptureRow, [string, number, number]>(`
-      SELECT c.*
-      FROM captures_fts f
-      JOIN captures c ON c.id = f.rowid
-      WHERE captures_fts MATCH ?
-        AND c.status = 'succeeded'
-      ORDER BY rank
-      LIMIT ? OFFSET ?
-    `)
-    .all(query, limit, offset);
+function queryCaptures(db: Database, query: string | null, opts: CaptureQueryOptions): CaptureRow[] {
+  const where: string[] = [];
+  const params: Array<string | number> = [];
+  const joins = [query ? 'JOIN captures_fts f ON f.rowid = c.id' : ''];
+
+  if (query) { where.push('captures_fts MATCH ?'); params.push(query); }
+  if (opts.status && opts.status !== 'all') { where.push('c.status = ?'); params.push(opts.status); }
+  if (!opts.status) where.push("c.status = 'succeeded'");
+  if (opts.mode) { where.push('c.mode = ?'); params.push(opts.mode); }
+  if (opts.domain) { where.push('u.domain = ?'); params.push(opts.domain); }
+  if (opts.title) { where.push("c.title LIKE ? ESCAPE '\\'"); params.push(`%${escapeLike(opts.title)}%`); }
+  if (opts.url) { where.push("(c.source_url LIKE ? ESCAPE '\\' OR c.final_url LIKE ? ESCAPE '\\')"); const p = `%${escapeLike(opts.url)}%`; params.push(p, p); }
+  if (opts.dateFrom) { where.push('c.captured_at >= ?'); params.push(opts.dateFrom); }
+  if (opts.dateTo) { where.push('c.captured_at < datetime(?, \'+1 day\')'); params.push(opts.dateTo); }
+  if (opts.tag) {
+    joins.push('JOIN capture_tags ct ON ct.capture_id = c.id JOIN tags t ON t.id = ct.tag_id');
+    where.push('t.name = ?'); params.push(opts.tag);
+  }
+
+  const sort = query && (opts.sort ?? 'relevance') === 'relevance'
+    ? 'bm25(captures_fts) ASC'
+    : opts.sort === 'oldest' ? 'c.captured_at ASC, c.id ASC' : 'c.captured_at DESC, c.id DESC';
+  params.push(opts.limit ?? 50, opts.offset ?? 0);
+
+  return db.query<CaptureRow, any[]>(`
+    SELECT c.*, u.domain
+    FROM captures c JOIN urls u ON u.id = c.url_id ${joins.filter(Boolean).join(' ')}
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY ${sort}
+    LIMIT ? OFFSET ?
+  `).all(...params);
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+export function findRecentCapture(db: Database, normalisedUrl: string, freshnessSeconds: number): CaptureRow | null {
+  if (freshnessSeconds <= 0) return null;
+  return db.query<CaptureRow, [string, number]>(`
+    SELECT c.* FROM urls u JOIN captures c ON c.id = u.latest_capture
+    WHERE u.normalised = ? AND c.status = 'succeeded'
+      AND c.captured_at >= datetime('now', '-' || ? || ' seconds')
+  `).get(normalisedUrl, freshnessSeconds) ?? null;
+}
+
+export function addCaptureAlias(db: Database, captureId: number, url: string, kind: string): void {
+  db.exec('INSERT OR IGNORE INTO capture_aliases (capture_id, url, kind) VALUES (?, ?, ?)', [captureId, url, kind]);
+}
+
+export function getCaptureAliases(db: Database, captureId: number): Array<{ url: string; kind: string }> {
+  return db.query<{ url: string; kind: string }, [number]>(
+    'SELECT url, kind FROM capture_aliases WHERE capture_id = ? ORDER BY id',
+  ).all(captureId);
+}
+
+export function updateCaptureNote(db: Database, captureId: number, note: string | null): void {
+  db.exec(`UPDATE captures SET note = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, [note, captureId]);
 }
 
 export function getCaptureHtml(
   db: Database,
   id: number,
-): { html: Buffer | null; compression: string } | null {
+): { html: Uint8Array | null; compression: string } | null {
   return db
-    .query<{ html: Buffer | null; compression: string }, [number]>(
+    .query<{ html: Uint8Array | null; compression: string }, [number]>(
       'SELECT html, compression FROM captures WHERE id = ?',
     )
     .get(id) ?? null;
@@ -227,12 +274,23 @@ export function createJob(
   db: Database,
   kind: string,
   payload: Record<string, unknown>,
+  idempotencyKey?: string,
 ): number {
+  const storedPayload = { ...payload, ...(idempotencyKey ? { idempotencyKey } : {}) };
+  if (idempotencyKey) {
+    const existing = db.query<{ id: number }, [string, string]>(`
+      SELECT id FROM jobs
+      WHERE kind = ? AND status IN ('queued','running','succeeded')
+        AND json_extract(payload, '$.idempotencyKey') = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(kind, idempotencyKey);
+    if (existing) return existing.id;
+  }
   const result = db
     .query<{ id: number }, any[]>(
       `INSERT INTO jobs (kind, status, payload) VALUES (?, 'queued', ?) RETURNING id`,
     )
-    .get(kind, JSON.stringify(payload));
+    .get(kind, JSON.stringify(storedPayload));
   if (!result) throw new Error('INSERT jobs returned no id');
   return result.id;
 }
@@ -241,6 +299,7 @@ export function claimNextJob(
   db: Database,
   kinds: string[],
 ): JobRow | null {
+  if (kinds.length === 0) return null;
   // Atomic claim: update status to 'running', return the row
   const placeholders = kinds.map(() => '?').join(', ');
   const row = db
@@ -250,13 +309,19 @@ export function claimNextJob(
          updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
        WHERE id = (
          SELECT id FROM jobs
-         WHERE status = 'queued' AND kind IN (${placeholders})
+         WHERE status = 'queued' AND attempt_count < max_attempts AND kind IN (${placeholders})
          ORDER BY queued_at ASC
          LIMIT 1
        )
        RETURNING *`,
     )
     .get(...kinds);
+  if (row) {
+    db.exec(
+      `INSERT INTO attempts (job_id, attempt) VALUES (?, ?)`,
+      [row.id, row.attempt_count],
+    );
+  }
   return row ?? null;
 }
 
@@ -267,23 +332,45 @@ export function finishJob(
   result?: Record<string, unknown>,
   error?: string,
 ): void {
-  db.exec(
-    `UPDATE jobs SET status = ?, result = ?, error = ?,
-       finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-     WHERE id = ?`,
-    [status, result ? JSON.stringify(result) : null, error ?? null, id],
-  );
+  db.transaction(() => {
+    db.exec(
+      `UPDATE jobs SET status = ?, result = ?, error = ?,
+         finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+       WHERE id = ?`,
+      [status, result ? JSON.stringify(result) : null, error ?? null, id],
+    );
+    db.exec(
+      `UPDATE attempts SET ended_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'), outcome = ?, error = ?
+       WHERE id = (SELECT id FROM attempts WHERE job_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1)`,
+      [status, error ?? null, id],
+    );
+  })();
 }
 
 export function recoverStuckJobs(db: Database): number {
-  // On startup, reset any running jobs back to queued (process may have crashed)
-  const result = db.exec(
+  // Retry abandoned jobs while attempts remain; otherwise terminate them.
+  db.exec(
+    `UPDATE jobs SET status = 'failed', error = 'Maximum attempts exhausted during recovery',
+       finished_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+     WHERE status = 'running' AND attempt_count >= max_attempts`,
+  );
+  const before = db.query<{ n: number }, []>(
+    `SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND attempt_count < max_attempts`,
+  ).get()?.n ?? 0;
+  db.exec(
     `UPDATE jobs SET status = 'queued', started_at = NULL,
        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-     WHERE status = 'running'`,
+     WHERE status = 'running' AND attempt_count < max_attempts`,
   );
-  return (result as any)?.changes ?? 0;
+  return before;
+}
+
+export function getJobAttempts(db: Database, id: number): Array<Record<string, unknown>> {
+  return db.query<Record<string, unknown>, [number]>(
+    'SELECT attempt, started_at, ended_at, outcome, error FROM attempts WHERE job_id = ? ORDER BY attempt',
+  ).all(id);
 }
 
 export function getJobById(db: Database, id: number): JobRow | null {
@@ -297,15 +384,26 @@ export function getJobById(db: Database, id: number): JobRow | null {
 // ---------------------------------------------------------------------------
 
 export function getOrCreateTag(db: Database, name: string): number {
+  const normalisedName = name.trim().replace(/\s+/g, ' ');
+  if (!normalisedName || normalisedName.length > 100) {
+    throw new Error('Tag names must contain 1 to 100 characters');
+  }
   const existing = db
     .query<{ id: number }, [string]>('SELECT id FROM tags WHERE name = ?')
-    .get(name);
+    .get(normalisedName);
   if (existing) return existing.id;
   const created = db
     .query<{ id: number }, [string]>('INSERT INTO tags (name) VALUES (?) RETURNING id')
-    .get(name);
+    .get(normalisedName);
   if (!created) throw new Error('INSERT tags failed');
   return created.id;
+}
+
+export function cancelJob(db: Database, id: number): boolean {
+  const before = db.query<{ status: string }, [number]>('SELECT status FROM jobs WHERE id = ?').get(id);
+  if (!before || before.status !== 'queued') return false;
+  db.exec(`UPDATE jobs SET status='cancelled', finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, [id]);
+  return true;
 }
 
 export function addTagToCapture(db: Database, captureId: number, tagName: string): void {

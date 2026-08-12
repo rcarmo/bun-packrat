@@ -25,6 +25,13 @@ describe('job lifecycle', () => {
     expect(job!.status).toBe('queued');
   });
 
+  test('idempotency keys reuse an existing job', () => {
+    const first = createJob(db, 'capture', { url: 'https://example.com/' }, 'same-request');
+    const second = createJob(db, 'capture', { url: 'https://example.com/' }, 'same-request');
+    expect(second).toBe(first);
+    expect(db.query<{ n: number }, []>('SELECT COUNT(*) n FROM jobs').get()?.n).toBe(1);
+  });
+
   test('claimNextJob atomically claims the oldest queued job', () => {
     const id1 = createJob(db, 'capture', { url: 'https://a.example.com/' });
     const id2 = createJob(db, 'capture', { url: 'https://b.example.com/' });
@@ -60,6 +67,9 @@ describe('job lifecycle', () => {
     expect(job!.status).toBe('succeeded');
     expect(job!.result).toContain('captureId');
     expect(job!.finished_at).not.toBeNull();
+    const attempt = db.query<{ outcome: string; ended_at: string }, [number]>('SELECT outcome, ended_at FROM attempts WHERE job_id = ?').get(id);
+    expect(attempt?.outcome).toBe('succeeded');
+    expect(attempt?.ended_at).not.toBeNull();
   });
 
   test('finishJob sets status to failed and records error', () => {
@@ -85,6 +95,13 @@ describe('job lifecycle', () => {
     expect(job!.started_at).toBeNull();
   });
 
+  test('recovery fails jobs that exhausted their attempts', () => {
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    db.exec('UPDATE jobs SET status = \'running\', attempt_count = max_attempts WHERE id = ?', [id]);
+    expect(recoverStuckJobs(db)).toBe(0);
+    expect(getJobById(db, id)?.status).toBe('failed');
+  });
+
   test('recoverStuckJobs returns 0 when no running jobs exist', () => {
     createJob(db, 'capture', { url: 'https://example.com/' });
     const recovered = recoverStuckJobs(db);
@@ -99,6 +116,14 @@ describe('job lifecycle', () => {
     expect(payload.mode).toBe('article');
   });
 });
+
+  test('cancelJob cancels only queued jobs', async () => {
+    const { cancelJob } = await import('../src/db/index.js');
+    const id = createJob(db, 'capture', { url: 'https://example.com/' });
+    expect(cancelJob(db, id)).toBe(true);
+    expect(getJobById(db, id)?.status).toBe('cancelled');
+    expect(cancelJob(db, id)).toBe(false);
+  });
 
 describe('tag management', () => {
   test('addTagToCapture and getCaptureTags round-trip', async () => {

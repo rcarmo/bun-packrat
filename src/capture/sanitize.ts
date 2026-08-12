@@ -29,7 +29,7 @@ const ALLOWED_ELEMENTS = new Set([
   // Links (kept, but href validated)
   'a',
   // Semantic
-  'time', 'address', 'title', 'meta', 'link', 'style',
+  'time', 'address', 'title', 'meta',
 ]);
 
 /** Attributes allowed globally on all elements */
@@ -48,10 +48,8 @@ const ALLOWED_ELEMENT_ATTRS: Record<string, Set<string>> = {
   col: new Set(['span']),
   colgroup: new Set(['span']),
   meta: new Set(['charset', 'name', 'content', 'http-equiv', 'property']),
-  link: new Set(['rel', 'type', 'href', 'media', 'charset']),
   time: new Set(['datetime']),
   details: new Set(['open']),
-  style: new Set(['media']),
   blockquote: new Set(['cite']),
   q: new Set(['cite']),
   del: new Set(['cite', 'datetime']),
@@ -75,8 +73,6 @@ const REMOVE_WITH_CONTENT = new Set([
 export interface SanitizeOptions {
   /** Maximum allowed length of any single attribute value (bytes) */
   maxAttrLength?: number;
-  /** Whether to keep <style> tags with inline CSS (default: true) */
-  keepStyles?: boolean;
 }
 
 export interface SanitizeResult {
@@ -93,7 +89,6 @@ export function sanitizeHtml(
   opts: SanitizeOptions = {},
 ): SanitizeResult {
   const maxAttrLength = opts.maxAttrLength ?? 65536;
-  const keepStyles = opts.keepStyles ?? true;
   const warnings: string[] = [];
 
   const { document } = parseHTML(rawHtml);
@@ -114,10 +109,9 @@ export function sanitizeHtml(
     document.querySelectorAll(tag).forEach((el) => toRemove.push(el as Element));
   }
 
-  // Style tags (keep or remove based on option)
-  if (!keepStyles) {
-    document.querySelectorAll('style').forEach((el) => toRemove.push(el as Element));
-  }
+  // External/embedded author CSS may contain remote url() dependencies and
+  // can defeat the offline guarantee. Canonical captures use Packrat's own CSS.
+  document.querySelectorAll('style,link').forEach((el) => toRemove.push(el as Element));
 
   // Common cookie/newsletter overlays (heuristic class names)
   const overlaySelectors = [
@@ -211,21 +205,37 @@ export function sanitizeHtml(
         continue;
       }
 
-      // Value safety — data: URLs on src/href are exempt (asset inliner produces large blobs)
+      // Value safety — validated image data URLs may be large, but all other
+      // attributes remain bounded.
       const value = attr.value ?? '';
-      const isDataUrl = value.startsWith('data:');
-      if (!isDataUrl && value.length > maxAttrLength) {
+      const isImageDataUrl = name === 'src' && value.startsWith('data:image/');
+      if (!isImageDataUrl && value.length > maxAttrLength) {
         node.removeAttribute(attr.name);
         warnings.push(`Attribute ${name} exceeded max length, removed`);
         continue;
       }
 
-      // Disallow javascript: and data: in href (data: images in src are fine)
       if (name === 'href') {
         const normalised = value.trim().toLowerCase();
-        if (normalised.startsWith('javascript:') || normalised.startsWith('vbscript:')) {
+        // Links may remain ordinary http(s), mailto, tel, or document fragments.
+        // Block all active/embedded schemes, including data: and protocol-relative
+        // URLs that could unexpectedly inherit a local scheme.
+        const allowedHref =
+          normalised.startsWith('http://') || normalised.startsWith('https://') ||
+          normalised.startsWith('mailto:') || normalised.startsWith('tel:') ||
+          normalised.startsWith('#') || normalised.startsWith('/');
+        if (normalised && !allowedHref) {
           node.setAttribute('href', '#');
-          warnings.push(`Replaced dangerous href value`);
+          warnings.push('Replaced dangerous href value');
+        }
+      }
+
+      if (name === 'src') {
+        const safeImageData = /^data:image\/(?:avif|bmp|gif|jpeg|jpg|png|webp|x-icon);base64,/i.test(value);
+        if (!safeImageData) {
+          node.removeAttribute(attr.name);
+          warnings.push('Removed non-inline image source');
+          continue;
         }
       }
 

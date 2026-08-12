@@ -160,6 +160,7 @@ export function assembleHtml(bodyHtml: string, opts: AssembleOptions): string {
       ? `<span class="label">Final URL</span> <a href="${escapeAttr(opts.finalUrl)}" rel="noopener">${escapeHtml(opts.finalUrl)}</a>`
       : '',
     `<span class="label">Mode</span> ${escapeHtml(mode)}`,
+    `<span class="label">Tool</span> ${escapeHtml(tool)}`,
   ]
     .filter(Boolean)
     .join('\n  ');
@@ -175,6 +176,9 @@ export function assembleHtml(bodyHtml: string, opts: AssembleOptions): string {
 <meta name="packrat:final-url" content="${escapeAttr(opts.finalUrl)}">
 <meta name="packrat:captured-at" content="${escapeAttr(captured)}">
 <meta name="packrat:mode" content="${escapeAttr(mode)}">
+${opts.author ? `<meta name="packrat:author" content="${escapeAttr(opts.author)}">` : ''}
+${opts.siteName ? `<meta name="packrat:site-name" content="${escapeAttr(opts.siteName)}">` : ''}
+${opts.publishedAt ? `<meta name="packrat:published-at" content="${escapeAttr(opts.publishedAt)}">` : ''}
 ${opts.captureId != null ? `<meta name="packrat:capture-id" content="${opts.captureId}">` : ''}
 <style>
 ${ARCHIVE_STYLES}

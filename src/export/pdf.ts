@@ -13,6 +13,7 @@ import { tmpdir } from 'os';
 import type { Database } from 'bun:sqlite';
 import { getCaptureById, getCaptureHtml } from '../db/index.js';
 import { slugify } from './html.js';
+import { findChromiumExecutable } from '../capture/pipeline.js';
 
 export interface PdfExportResult {
   pdf: Uint8Array;
@@ -33,7 +34,7 @@ export async function exportPdf(
 
   let htmlBytes: Buffer;
   if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(row.html as unknown as Uint8Array));
+    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
   } else {
     htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
   }
@@ -54,11 +55,20 @@ export async function exportPdf(
       executablePath: findChromiumExecutable(browsersPath),
     });
 
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    const page = await context.newPage();
     page.setDefaultNavigationTimeout(captureTimeoutMs);
+    await page.route('**/*', async (route) => {
+      const requestUrl = route.request().url();
+      if (requestUrl.startsWith('file://') || requestUrl.startsWith('data:')) {
+        await route.continue();
+      } else {
+        await route.abort('blockedbyclient');
+      }
+    });
 
-    // Load from file:// — no network needed, all assets are inline
-    await page.goto(`file://${htmlPath}`, { waitUntil: 'networkidle' });
+    // Load from file:// — all assets must already be inline.
+    await page.goto(`file://${htmlPath}`, { waitUntil: 'load' });
 
     await page.pdf({
       path: pdfPath,
@@ -78,15 +88,4 @@ export async function exportPdf(
       if (existsSync(p)) unlinkSync(p);
     }
   }
-}
-
-function findChromiumExecutable(browsersPath: string): string {
-  try {
-    const { readdirSync } = require('fs');
-    const { join } = require('path');
-    const dirs = readdirSync(browsersPath);
-    const dir = dirs.find((d: string) => d.startsWith('chromium-'));
-    if (dir) return join(browsersPath, dir, 'chrome-linux64', 'chrome');
-  } catch {}
-  return '';
 }

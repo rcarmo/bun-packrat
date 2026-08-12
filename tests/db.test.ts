@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, getCaptureById, listCaptures, searchCaptures, updateLatestCapture } from '../src/db/index.js';
+import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, getCaptureById, listCaptures, searchCaptures, updateLatestCapture, findRecentCapture, addCaptureAlias, getCaptureAliases, updateCaptureNote } from '../src/db/index.js';
 import type { Database } from 'bun:sqlite';
 
 let db: Database;
@@ -23,6 +23,8 @@ describe('schema migrations', () => {
       .query<{ version: number }, []>('SELECT version FROM schema_migrations')
       .get();
     expect(row?.version).toBe(1);
+    const latest = db.query<{ version: number }, []>('SELECT MAX(version) version FROM schema_migrations').get();
+    expect(latest?.version).toBe(3);
   });
 
   test('creates all required tables', () => {
@@ -171,6 +173,25 @@ describe('FTS search', () => {
   });
 });
 
+describe('capture application features', () => {
+  test('finds a recent successful capture for freshness reuse', () => {
+    const url = getOrCreateUrl(db, 'https://recent.example.com/', 'https://recent.example.com/');
+    const id = insertCapture(db, { url_id: url.id, source_url: url.original, final_url: url.original, html: null, compression: 'none', content_hash: 'x', html_size: 1, title: 'Recent', author: null, site_name: null, published_at: null, excerpt: null, lang: null, extracted_text: 'recent', mode: 'article', status: 'succeeded', capture_tool: 'test/0', warnings: null });
+    updateLatestCapture(db, url.id, id);
+    expect(findRecentCapture(db, url.normalised, 3600)?.id).toBe(id);
+    expect(findRecentCapture(db, url.normalised, 0)).toBeNull();
+  });
+
+  test('stores aliases and notes', () => {
+    const url = getOrCreateUrl(db, 'https://alias.example.com/', 'https://alias.example.com/');
+    const id = insertCapture(db, { url_id: url.id, source_url: url.original, final_url: url.original, html: null, compression: 'none', content_hash: null, html_size: null, title: 'Alias', author: null, site_name: null, published_at: null, excerpt: null, lang: null, extracted_text: null, mode: 'article', status: 'succeeded', capture_tool: 'test/0', warnings: null });
+    addCaptureAlias(db, id, 'https://alias.example.com/old', 'redirect');
+    updateCaptureNote(db, id, 'Remember this');
+    expect(getCaptureAliases(db, id)).toEqual([{ url: 'https://alias.example.com/old', kind: 'redirect' }]);
+    expect(getCaptureById(db, id)?.note).toBe('Remember this');
+  });
+});
+
 describe('listCaptures', () => {
   test('returns only succeeded captures', () => {
     const url = getOrCreateUrl(db, 'https://a.example.com/', 'https://a.example.com/');
@@ -179,5 +200,13 @@ describe('listCaptures', () => {
 
     const rows = listCaptures(db, { status: 'succeeded' });
     expect(rows.every((r) => r.status === 'succeeded')).toBe(true);
+  });
+
+  test('filters by domain, title, mode, and status', () => {
+    const url = getOrCreateUrl(db, 'https://filters.example.com/a', 'https://filters.example.com/a');
+    insertCapture(db, { url_id: url.id, source_url: url.original, final_url: url.original, html: null, compression: 'none', content_hash: null, html_size: null, title: 'Specific title', author: null, site_name: null, published_at: null, excerpt: null, lang: null, extracted_text: null, mode: 'full_page', status: 'failed', capture_tool: 'test/0', warnings: null });
+    const rows = listCaptures(db, { domain: 'filters.example.com', title: 'specific', mode: 'full_page', status: 'failed' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].title).toBe('Specific title');
   });
 });

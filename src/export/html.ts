@@ -24,7 +24,7 @@ export async function exportHtml(
 
   let htmlBytes: Buffer;
   if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(row.html as unknown as Uint8Array));
+    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
   } else {
     htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
   }

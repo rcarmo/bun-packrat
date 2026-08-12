@@ -6,7 +6,7 @@ Replaces a 35 GB / 130,000-file ArchiveBox deployment with one SQLite database a
 
 ## Status
 
-Phases 1, 2 and 4 are complete. 63 tests passing.
+All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 84 tests passing across 9 files, including real `epubcheck` validation when installed.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -51,11 +51,13 @@ open http://localhost:3047/
 PACKRAT_BASE_URL=http://packrat.local
 PACKRAT_HTML_COMPRESSION=gzip
 PACKRAT_MAX_CONCURRENT_CAPTURES=3
+PACKRAT_AUTH_USER=packrat
+PACKRAT_AUTH_PASSWORD=replace-with-a-secret
 PUID=1000
 PGID=1000
 ```
 
-The image is ~500 MB (Chromium headless-shell included). No browser download at container start.
+The image is ~500 MB (Chromium headless-shell included). No browser download occurs at container start. Authentication is required by default: set `PACKRAT_AUTH_PASSWORD` in the shell or `config/.env`. For an intentionally unauthenticated trusted-LAN deployment, set `PACKRAT_AUTH_DISABLED=1` explicitly.
 
 ### Local development (Bun required)
 
@@ -88,6 +90,12 @@ bun run src/cli/index.ts capture https://example.com/article
 | `PACKRAT_MAX_PAGE_BYTES` | `20971520` | Maximum stored page size (20 MB) |
 | `PACKRAT_MAX_ASSET_BYTES` | `5242880` | Maximum asset size to inline as data: URL (5 MB) |
 | `PACKRAT_HTML_COMPRESSION` | `none` | Stored HTML compression: `none` or `gzip` |
+| `PACKRAT_FRESHNESS_SECONDS` | `86400` | Reuse the latest successful capture for this interval; `0` disables |
+| `PACKRAT_CAPTURE_WAIT_UNTIL` | `networkidle` | Playwright readiness: `load`, `domcontentloaded`, `networkidle`, `commit` |
+| `PACKRAT_CAPTURE_SETTLING_MS` | `1000` | Delay after readiness before overlay removal and scrolling |
+| `PACKRAT_AUTH_USER` | `packrat` | HTTP Basic authentication username |
+| `PACKRAT_AUTH_PASSWORD` | none | Required password unless authentication is explicitly disabled |
+| `PACKRAT_AUTH_DISABLED` | `0` | Set to `1` only for an intentionally unauthenticated trusted LAN |
 
 ---
 
@@ -97,15 +105,26 @@ bun run src/cli/index.ts capture https://example.com/article
 
 ```
 POST   /api/captures
-       Body: { "url": "https://..." }
+       Body: { "url": "https://...", "force": false }
+       Optional header: Idempotency-Key
        Response: 202 { "message": "Capture queued", "jobId": N, "url": "..." }
 
 GET    /api/captures
-       Query: q (FTS query), limit (default 50, max 200), offset
+       Query: q, limit, offset, url, domain, title, tag, dateFrom, dateTo,
+              status, mode, sort=newest|oldest|relevance
        Response: { "captures": [...] }
 
 GET    /api/captures/:id
-       Response: capture metadata JSON (add ?meta to force JSON on browser requests)
+       Response: capture metadata, warnings, note, aliases and provenance JSON
+
+GET    /bookmarklet.js
+       Bookmarklet payload; save as javascript:(()=>{...contents...})()
+
+POST   /api/captures/:id/recapture
+       Queue a forced recapture, bypassing the freshness window
+
+PUT    /api/captures/:id/note
+       Body: { "note": "..." }
 
 GET    /captures/:id
        Response: archived HTML with restrictive CSP (no external requests)
@@ -140,7 +159,9 @@ POST   /api/captures/:id/tags
 
 ```
 GET    /api/jobs/:id
-       Response: job row (status, result, error, attempt_count, timestamps)
+       Response: job row plus attempt diagnostics
+DELETE /api/jobs/:id
+       Cancel a queued job
 
 GET    /api/status
        Response: { "status": "ok", "captures": {...}, "jobQueue": {...}, "dbSizeMb": "..." }
@@ -156,8 +177,8 @@ bun run src/cli/index.ts <command> [args]
 
 | Command | Description |
 |---|---|
-| `capture <url>` | Archive a URL (blocking, JSON output) |
-| `search <query>` | Full-text search, returns JSON |
+| `capture <url> [--force]` | Archive a URL; reuse a fresh capture unless forced (JSON output) |
+| `search <query> [--domain/--tag/--mode/--status/--sort]` | Filtered full-text search, returns JSON |
 | `list [--limit N]` | List recent successful captures (default 20) |
 | `export <id> --format html\|md\|epub\|pdf [--output path]` | Export a capture; stdout if `--output` omitted |
 | `backup <dest.sqlite>` | Consistent backup via `VACUUM INTO` |
@@ -196,10 +217,10 @@ POST /api/captures
 
 JobQueue.poll()
   → claimNextJob (atomic UPDATE … RETURNING)
-  → Playwright: launch → navigate → dismiss overlays → scroll
+  → Playwright: launch → DNS/IP guard every request → navigate → dismiss overlays → scroll
   → Readability extraction (article mode) or full-page fallback
-  → Asset inliner: fetch external images/fonts → data: URLs
-  → HTML sanitiser: allow-list, strip scripts/iframes/forms/handlers
+  → Asset inliner: SSRF-check and size-bound external images → data: URLs
+  → HTML sanitiser: allow-list, strip scripts/iframes/forms/handlers/remote CSS/srcset
   → Assembler: archive header + responsive CSS + print CSS
   → SHA-256 hash + optional gzip compression
   → INSERT captures (succeeded)
@@ -220,7 +241,7 @@ JobQueue.poll()
 Archived pages are served with:
 
 ```
-Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:
+Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 ```
 
 This prevents any external network request when viewing a capture.
@@ -238,21 +259,23 @@ All exports derive from the stored HTML BLOB in SQLite. No separate asset tree i
 
 ### Job queue
 
-An in-process poller (`JobQueue`) polls the `jobs` table on a configurable interval (default 2 s). On startup it recovers any jobs left in `running` state by resetting them to `queued`. Job claims are atomic (`UPDATE … WHERE id = (SELECT … LIMIT 1) RETURNING *`).
+An in-process poller (`JobQueue`) polls the `jobs` table on a configurable interval (default 2 s). On startup it requeues abandoned jobs with attempts remaining and fails exhausted jobs. Each claim/finish is recorded in `attempts`. Job claims are atomic (`UPDATE … WHERE id = (SELECT … LIMIT 1) RETURNING *`).
 
 ---
 
 ## Testing
 
 ```bash
-bun test                    # all 63 tests
+bun test                    # all 84 tests (epubcheck test skips if unavailable)
 bun test tests/db.test.ts   # schema and database helpers
 bun test tests/url.test.ts  # URL normaliser and SSRF guard
 bun test tests/sanitize.test.ts   # HTML sanitiser (hostile-input coverage)
 bun test tests/phase1.test.ts     # Phase 1 integration: extract → sanitise → assemble → store → search
 bun test tests/queue.test.ts      # job lifecycle and tag management
 bun test tests/markdown.test.ts   # Markdown + ZIP export
-bun test tests/epub.test.ts       # EPUB 3 export (structure and spec compliance)
+bun test tests/epub.test.ts       # EPUB 3 export (structure and epubcheck compliance)
+bun test tests/assets.test.ts     # absolute links + tracker removal
+bun test tests/upgrade.test.ts    # migration upgrade + standalone backup restore
 ```
 
 ---
@@ -270,9 +293,12 @@ bun run src/cli/index.ts verify --all
 docker compose exec packrat \
   bun run src/cli/index.ts backup /data/packrat-backup.sqlite
 
-# Restore: replace the database file and restart
+# Restore while the service is stopped (never replace a live WAL database)
+docker compose stop packrat
+rm -f data/packrat.db-wal data/packrat.db-shm
 cp packrat-backup.sqlite data/packrat.db
-docker compose restart packrat
+docker compose start packrat
+bun run src/cli/index.ts verify --all
 ```
 
 The restored instance requires no asset directory, queue daemon or search service.

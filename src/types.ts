@@ -30,7 +30,7 @@ export interface CaptureRow {
   url_id: number;
   source_url: string;
   final_url: string;
-  html: Buffer | null;
+  html: Uint8Array | null;
   compression: Compression;
   content_hash: string | null;
   html_size: number | null;
@@ -45,6 +45,9 @@ export interface CaptureRow {
   status: CaptureStatus;
   capture_tool: string;
   warnings: string | null;
+  error: string | null;
+  note: string | null;
+  capture_duration_ms: number | null;
   captured_at: string;
   created_at: string;
   updated_at: string;
@@ -107,8 +110,18 @@ export interface PackratConfig {
   maxAssetSizeBytes: number;
   captureTimeoutMs: number;
   maxConcurrentCaptures: number;
-  /** 'none' | 'gzip' — zstd reserved for future Bun native support */
-  htmlCompression: Compression;
+  /** Supported storage compression formats. */
+  htmlCompression: 'none' | 'gzip';
   /** base URL of this service, for self-links */
   baseUrl: string;
+  /** Recent successful capture reuse window; 0 disables reuse. */
+  freshnessSeconds: number;
+  /** Playwright navigation readiness condition. */
+  captureWaitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+  /** Additional settling delay after navigation. */
+  captureSettlingMs: number;
+  /** HTTP Basic authentication. Empty password is allowed only when explicitly disabled. */
+  authUser: string;
+  authPassword: string;
+  authDisabled: boolean;
 }

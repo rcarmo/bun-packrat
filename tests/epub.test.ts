@@ -3,6 +3,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { openDatabase, runMigrations, getOrCreateUrl, insertCapture } from '../src/db/index.js';
 import { exportEpub } from '../src/export/epub.js';
 import type { Database } from 'bun:sqlite';
@@ -25,6 +28,7 @@ const SAMPLE_HTML = `<!DOCTYPE html>
 <p>By <strong>Jane Smith</strong></p>
 <p>This is the first paragraph of the article with some content to verify.</p>
 <p>Second paragraph with more text for the EPUB body.</p>
+<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI12P4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==" alt="cover">
 <ul><li>List item one</li><li>List item two</li></ul>
 </div>
 </body>
@@ -113,7 +117,25 @@ describe('exportEpub', () => {
     const content = Buffer.from(r!.epub).toString('latin1');
     expect(content).toContain('version="3.0"');
     expect(content).toContain('EPUB Test Article');
+    expect(content).toContain('properties="cover-image"');
+    expect(content).toContain('<meta name="cover" content="img0" />');
+    expect(content).toContain('<dc:date>');
   });
+
+  test('passes installed epubcheck release validator', async () => {
+    if (!Bun.which('epubcheck')) return;
+    const id = insertTestCapture(db);
+    const r = await exportEpub(db, id);
+    const dir = mkdtempSync(join(tmpdir(), 'packrat-epubcheck-'));
+    const path = join(dir, 'test.epub');
+    try {
+      await Bun.write(path, r!.epub);
+      const proc = Bun.spawnSync(['epubcheck', path], { stdout: 'pipe', stderr: 'pipe' });
+      expect(proc.exitCode, `${proc.stdout.toString()}\n${proc.stderr.toString()}`).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   test('archive header div is removed from EPUB article body', async () => {
     const id = insertTestCapture(db);

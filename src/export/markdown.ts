@@ -78,6 +78,10 @@ function buildZip(entries: ZipEntry[]): Uint8Array {
     const cv = new DataView(c.buffer);
     cv.setUint32(0, 0x02014b50, true);
     cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0, true);
+    cv.setUint16(10, 0, true); // method: store
+    cv.setUint16(12, now.dosTime, true);
+    cv.setUint16(14, now.dosDate, true);
     cv.setUint32(16, crc, true);
     cv.setUint32(20, data.length, true);
     cv.setUint32(24, data.length, true);
@@ -259,7 +263,7 @@ export async function exportMarkdownZip(
 
   let htmlBytes: Buffer;
   if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(row.html as unknown as Uint8Array));
+    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
   } else {
     htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
   }
