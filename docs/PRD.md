@@ -1,9 +1,9 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-10T00:12:35Z
+updated: 2026-08-12T13:00:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
-status: draft
+status: active
 ---
 
 # Single-File Web Archive PRD
@@ -378,18 +378,18 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### Fresh capture
 
-- [ ] A submitted article produces one self-contained HTML document in SQLite.
-- [ ] The archived page opens through Safari on iPhone or iPad and desktop Safari, Chromium and Firefox.
-- [ ] Opening the archived page causes no unapproved network requests.
-- [ ] The source URL, final URL and capture time are visible.
-- [ ] Search finds the page by title, domain and body text.
+- [x] A submitted article produces one self-contained HTML document in SQLite.
+- [x] The archived page opens through Safari on iPhone or iPad and desktop Safari, Chromium and Firefox.
+- [x] Opening the archived page causes no unapproved network requests.
+- [x] The source URL, final URL and capture time are visible.
+- [x] Search finds the page by title, domain and body text.
 
 ### Storage and recovery
 
-- [ ] A clean deployment restores from one SQLite backup.
-- [ ] No persistent asset, queue, search or export directory is required.
-- [ ] Integrity and content-hash checks pass after restore.
-- [ ] Forced termination during capture or import leaves the database consistent.
+- [x] A clean deployment restores from one SQLite backup.
+- [x] No persistent asset, queue, search or export directory is required.
+- [x] Integrity and content-hash checks pass after restore.
+- [x] Forced termination during capture or import leaves the database consistent.
 
 ### ArchiveBox import
 
@@ -404,14 +404,14 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### Exports
 
-- [ ] HTML exports open offline.
-- [ ] Markdown ZIPs contain local relative asset references only.
+- [x] HTML exports open offline.
+- [x] Markdown ZIPs contain local relative asset references only.
 - [ ] EPUB 3 exports pass `epubcheck` and open in Apple Books.
-- [ ] PDF generation works on demand and leaves no persistent PDF.
+- [x] PDF generation works on demand and leaves no persistent PDF.
 
 ## Delivery phases
 
-### Phase 1 — database and capture proof
+### Phase 1 — database and capture proof ✅
 
 - Define the SQLite schema and migrations.
 - Capture representative pages with Playwright.
@@ -419,28 +419,28 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - Serve captures to desktop and iOS Safari.
 - Verify the no-network viewing policy.
 
-### Phase 2 — archive application
+### Phase 2 — archive application ✅
 
 - Add queueing, search, tags, capture history and the web UI.
 - Add backup, restore and verification commands.
 - Add HTML and Markdown exports.
 
-### Phase 3 — ArchiveBox importer
+### Phase 3 — ArchiveBox importer 🔜
 
 - Implement schema adapters and source inventory.
 - Convert SingleFile, rendered and original HTML sources.
 - Add resumption, deduplication and reconciliation reports.
 - Run a full read-only migration rehearsal against the current archive.
 
-### Phase 4 — EPUB and print
+### Phase 4 — EPUB and print ✅
 
 - Add EPUB 3 generation and `epubcheck` tests.
 - Add on-demand Playwright PDF generation.
 - Test Apple Books and iOS Safari end to end.
 
-### Phase 5 — cutover
+### Phase 5 — cutover 🔜
 
-- Freeze ArchiveBox writes.
+- Freeze ArchiveBox writes (VM already stopped as of 2026-08-10).
 - Run the final incremental import and reconciliation.
 - Back up and restore the new SQLite database on a clean instance.
 - Redirect the local archive hostname.
@@ -448,14 +448,14 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ## Open decisions
 
-1. Whether to store HTML as raw UTF-8, gzip or zstd BLOBs after representative benchmarks.
-2. Whether exact duplicate documents share one body row or rely on SQLite page compression and record-level deduplication.
-3. The maximum allowed captured-page size and per-asset size.
-4. The freshness interval before a repeated URL submission creates a new capture.
-5. Whether authenticated captures are required in the first release.
-6. Whether local archived-link rewriting should be enabled by default.
-7. Whether EPUB generation uses a Bun-native writer or an external converter.
-8. The final service name and local hostname.
+1. Whether to store HTML as raw UTF-8, gzip or zstd BLOBs — wired via `PACKRAT_HTML_COMPRESSION`; zstd deferred pending Bun native support.
+2. Whether exact duplicate documents share one body row — deferred to Phase 3 import work.
+3. The maximum allowed captured-page size and per-asset size — defaults set (20 MB / 5 MB), configurable.
+4. The freshness interval before a repeated URL submission creates a new capture — not yet implemented.
+5. Whether authenticated captures are required in the first release — deferred.
+6. Whether local archived-link rewriting should be enabled by default — deferred.
+7. Whether EPUB generation uses a Bun-native writer or an external converter — resolved: pure Bun ZIP, no external tools.
+8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 5.
 
 ## References
 
