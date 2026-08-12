@@ -25,7 +25,7 @@ const ALLOWED_ELEMENTS = new Set([
   // Tables
   'table', 'caption', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'colgroup', 'col',
   // Media
-  'img', 'picture', 'source', 'figure', 'figcaption',
+  'img', 'picture', 'figure', 'figcaption',
   // Links (kept, but href validated)
   'a',
   // Semantic
@@ -42,7 +42,6 @@ const ALLOWED_GLOBAL_ATTRS = new Set([
 const ALLOWED_ELEMENT_ATTRS: Record<string, Set<string>> = {
   a: new Set(['href', 'rel', 'target', 'download']),
   img: new Set(['src', 'alt', 'width', 'height', 'loading', 'decoding']),
-  source: new Set(['src', 'srcset', 'media', 'type', 'sizes']),
   picture: new Set([]),
   td: new Set(['colspan', 'rowspan', 'align', 'valign']),
   th: new Set(['colspan', 'rowspan', 'scope', 'align', 'valign']),
@@ -212,9 +211,10 @@ export function sanitizeHtml(
         continue;
       }
 
-      // Value safety
+      // Value safety — data: URLs on src/href are exempt (asset inliner produces large blobs)
       const value = attr.value ?? '';
-      if (value.length > maxAttrLength) {
+      const isDataUrl = value.startsWith('data:');
+      if (!isDataUrl && value.length > maxAttrLength) {
         node.removeAttribute(attr.name);
         warnings.push(`Attribute ${name} exceeded max length, removed`);
         continue;
@@ -235,6 +235,14 @@ export function sanitizeHtml(
         warnings.push('Removed meta http-equiv refresh');
         return;
       }
+    }
+
+    // Native lazy loading is unreliable for large data: URLs in Safari and can
+    // leave offline images undecoded. All archived assets are local, so eager
+    // loading has no network cost.
+    if (tag === 'img') {
+      node.setAttribute('loading', 'eager');
+      node.setAttribute('decoding', 'async');
     }
   }
 

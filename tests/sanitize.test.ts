@@ -112,4 +112,47 @@ describe('sanitizeHtml', () => {
     expect(html).not.toContain('<!--');
     expect(html).toContain('<p>Visible</p>');
   });
+
+  test('preserves large data: URL src attributes (asset inliner output)', () => {
+    // Simulate a base64-encoded image larger than the default 65536-byte maxAttrLength
+    const largeB64 = 'A'.repeat(100_000);
+    const { html, warnings } = sanitizeHtml(
+      `<html><body><img src="data:image/png;base64,${largeB64}" alt="big"></body></html>`,
+    );
+    expect(html).toContain('data:image/png;base64,');
+    expect(warnings.some((w) => w.includes('exceeded max length'))).toBe(false);
+  });
+
+  test('still removes non-data: src attributes that exceed max length', () => {
+    const longUrl = 'https://example.com/' + 'x'.repeat(70_000);
+    const { html, warnings } = sanitizeHtml(
+      `<html><body><img src="${longUrl}" alt="long"></body></html>`,
+    );
+    expect(html).not.toContain(longUrl);
+    expect(warnings.some((w) => w.includes('exceeded max length'))).toBe(true);
+  });
+
+  test('removes responsive picture sources and srcset so the inlined img is used', () => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const { html } = sanitizeHtml(
+      `<html><body><picture>` +
+      `<source srcset="https://cdn.example.com/large.webp 2x" type="image/webp">` +
+      `<img src="${dataUrl}" srcset="https://cdn.example.com/large.jpg 2x" sizes="100vw" alt="test">` +
+      `</picture></body></html>`,
+    );
+    expect(html).not.toContain('<source');
+    expect(html).not.toContain('srcset');
+    expect(html).not.toContain('sizes=');
+    expect(html).not.toContain('cdn.example.com');
+    expect(html).toContain(dataUrl);
+  });
+
+  test('forces archived images to eager loading for Safari data: URL compatibility', () => {
+    const { html } = sanitizeHtml(
+      '<html><body><img loading="lazy" src="data:image/png;base64,iVBORw0KGgo=" alt="test"></body></html>',
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).toContain('decoding="async"');
+    expect(html).not.toContain('loading="lazy"');
+  });
 });
