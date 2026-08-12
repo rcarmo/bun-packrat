@@ -6,7 +6,7 @@ Replaces a 35 GB / 130,000-file ArchiveBox deployment with one SQLite database a
 
 ## Status
 
-All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 84 tests passing across 9 files, including real `epubcheck` validation when installed.
+All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 85 tests passing across 10 files, including real `epubcheck` validation when installed.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -217,8 +217,9 @@ POST /api/captures
 
 JobQueue.poll()
   → claimNextJob (atomic UPDATE … RETURNING)
-  → Playwright: launch → DNS/IP guard every request → navigate → dismiss overlays → scroll
-  → Readability extraction (article mode) or full-page fallback
+  → Playwright: launch → DNS/IP guard every request → navigate → scroll
+  → Snapshot complete rendered DOM → Readability extraction
+  → Remove bounded overlay chrome only for full-page fallback
   → Asset inliner: SSRF-check and size-bound external images → data: URLs
   → HTML sanitiser: allow-list, strip scripts/iframes/forms/handlers/remote CSS/srcset
   → Assembler: archive header + responsive CSS + print CSS
@@ -266,7 +267,7 @@ An in-process poller (`JobQueue`) polls the `jobs` table on a configurable inter
 ## Testing
 
 ```bash
-bun test                    # all 84 tests (epubcheck test skips if unavailable)
+bun test                    # all 85 tests (epubcheck test skips if unavailable)
 bun test tests/db.test.ts   # schema and database helpers
 bun test tests/url.test.ts  # URL normaliser and SSRF guard
 bun test tests/sanitize.test.ts   # HTML sanitiser (hostile-input coverage)
@@ -276,6 +277,7 @@ bun test tests/markdown.test.ts   # Markdown + ZIP export
 bun test tests/epub.test.ts       # EPUB 3 export (structure and epubcheck compliance)
 bun test tests/assets.test.ts     # absolute links + tracker removal
 bun test tests/upgrade.test.ts    # migration upgrade + standalone backup restore
+bun test tests/overlays.test.ts   # overlay removal must preserve newsletter articles
 ```
 
 ---

@@ -14,6 +14,7 @@ import { extractContent } from './extract.js';
 import { sanitizeHtml } from './sanitize.js';
 import { inlineAssets } from './assets.js';
 import { assembleHtml } from './assemble.js';
+import { DISMISS_OVERLAYS_JS } from './overlays.js';
 import {
   getOrCreateUrl,
   insertCapture,
@@ -30,26 +31,6 @@ export interface PipelineOptions {
 }
 
 const TOOL_VERSION = 'packrat/0.1.0';
-
-/** Playwright overlay-dismissal script injected into the page */
-const DISMISS_OVERLAYS_JS = `
-(function() {
-  // Remove fixed/sticky elements that look like overlays
-  document.querySelectorAll('*').forEach(el => {
-    const s = getComputedStyle(el);
-    if ((s.position === 'fixed' || s.position === 'sticky') && s.zIndex > 100) {
-      const rect = el.getBoundingClientRect();
-      const isLarge = rect.width > window.innerWidth * 0.4 && rect.height > 50;
-      if (isLarge) el.remove();
-    }
-  });
-  // Remove common overlay class patterns
-  ['cookie', 'consent', 'gdpr', 'newsletter', 'popup', 'modal', 'overlay', 'banner']
-    .forEach(kw => {
-      document.querySelectorAll(\`[class*="\${kw}"],[id*="\${kw}"]\`).forEach(el => el.remove());
-    });
-})();
-`;
 
 /**
  * Run the full capture pipeline for a URL.
@@ -178,12 +159,15 @@ export async function capturePage(
 
     if (config.captureSettlingMs > 0) await page.waitForTimeout(config.captureSettlingMs);
 
-    // 5. Dismiss overlays and scroll for lazy content
-    await page.evaluate(DISMISS_OVERLAYS_JS).catch(() => {});
+    // 5. Scroll for lazy content, then snapshot the rendered DOM before any
+    // overlay cleanup. Extraction uses this complete snapshot so an imperfect
+    // overlay heuristic cannot delete article content.
     await scrollPage(page);
-
-    // 6. Get rendered HTML
     const renderedHtml = await page.content();
+    await page.evaluate(DISMISS_OVERLAYS_JS).catch(() => {});
+    const cleanedFullPageHtml = await page.content();
+
+    // 6. Close the browser context once both snapshots are available.
 
     await context.close();
 
@@ -193,13 +177,14 @@ export async function capturePage(
 
     // 7. Extract article content
     const extracted = extractContent(renderedHtml, finalUrl);
+    const renderedTextLength = extracted.extractedText?.length ?? 0;
     if (extracted.mode === 'full_page') {
       warnings.push('Readability extraction failed or yielded too little text; using full-page mode');
     }
 
     // 8. Inline external assets
     const { html: htmlWithAssets, warnings: assetWarnings } = await inlineAssets(
-      extracted.articleHtml ?? renderedHtml,
+      extracted.articleHtml ?? cleanedFullPageHtml,
       {
         baseUrl: finalUrl,
         maxAssetBytes: config.maxAssetSizeBytes,
@@ -311,6 +296,7 @@ export async function capturePage(
         event: 'capture.succeeded',
         captureId,
         mode: extracted.mode,
+        extractedTextLength: renderedTextLength,
         url: normalisedUrl,
         finalUrl,
         htmlSize: htmlBytes.byteLength,

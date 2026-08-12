@@ -2,7 +2,7 @@
 
 Project path: `/workspace/projects/bun-packrat`  
 PRD: `docs/PRD.md`  
-Status: **All actionable non-ArchiveBox scope complete — 84 tests passing across 9 files; Phases 3 and 5 deferred**
+Status: **All actionable non-ArchiveBox scope complete — 85 tests passing across 10 files; Phases 3 and 5 deferred**
 
 ---
 
@@ -106,6 +106,7 @@ bun-packrat/
 │   │   ├── assemble.ts                # archive header + CSS → self-contained HTML
 │   │   ├── assets.ts                  # fetch external assets → data: URLs
 │   │   ├── extract.ts                 # Mozilla Readability extraction
+│   │   ├── overlays.ts                # conservative overlay cleanup
 │   │   ├── pipeline.ts                # Playwright orchestration
 │   │   ├── sanitize.ts                # allow-list HTML sanitiser
 │   │   └── url.ts                     # URL normalisation + SSRF guard
@@ -135,6 +136,7 @@ bun-packrat/
 │   ├── markdown.test.ts               # Markdown + ZIP export
 │   ├── phase1.test.ts                 # Phase 1 integration pipeline
 │   ├── assets.test.ts                 # link normalisation + tracking pixels
+│   ├── overlays.test.ts               # preserve newsletter article content
 │   ├── queue.test.ts                  # job lifecycle + tag management
 │   ├── sanitize.test.ts               # HTML sanitiser (hostile-input)
 │   ├── upgrade.test.ts                # migration upgrade + backup restore
