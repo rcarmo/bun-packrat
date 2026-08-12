@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-12T14:30:00Z
+updated: 2026-08-12T17:19:22Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -64,6 +64,15 @@ The initial deployment has one trusted user on the local network.
 ### Export content
 
 The user chooses HTML, Markdown, EPUB or PDF from an archive entry. HTML streams directly from SQLite. Other formats are produced from the stored HTML and metadata, then streamed to the caller. Temporary export files are removed after delivery.
+
+### Delete a capture
+
+1. The user starts deletion from a capture detail or search result.
+2. The UI displays the capture title, source URL, capture timestamp and affected relations before confirmation.
+3. The user confirms the destructive action. The server rejects unconfirmed deletion requests.
+4. The service deletes the capture, its tags, notes, aliases, metadata and search-index entry in one database transaction.
+5. If the deleted capture was the URL's latest capture, the service points `latest_capture` to the newest remaining successful capture for that URL, or clears it when none remains.
+6. The URL identity remains while other captures or jobs refer to it. The service may remove an unreferenced URL row as part of the same transaction.
 
 ### Import ArchiveBox
 
@@ -165,6 +174,7 @@ The archive UI must provide:
 - duplicate and failed-import views;
 - export actions;
 - recapture action;
+- deletion with explicit confirmation;
 - a direct link to the source URL.
 
 Search results must render server-side or as progressively enhanced HTML so the index remains usable in iOS Safari with minimal JavaScript.
@@ -179,6 +189,7 @@ POST   /api/import/archivebox     start or resume an import
 GET    /api/jobs/:id              inspect progress and errors
 GET    /api/captures              search and filter
 GET    /api/captures/:id          retrieve metadata
+DELETE /api/captures/:id          delete one capture after explicit confirmation
 GET    /captures/:id              view archived HTML
 GET    /captures/:id/export/html  download HTML
 GET    /captures/:id/export/md    download Markdown and assets as ZIP
@@ -194,11 +205,25 @@ archive import archivebox --data-root <path> --database <path>
 archive import status [job-id]
 archive search <query>
 archive export <capture-id> --format html|md|epub|pdf
+archive delete <capture-id> --confirm
 archive verify [--all]
 archive backup <destination.sqlite>
 ```
 
-Import and capture commands must support JSON output for automation.
+Import, capture and delete commands must support JSON output for automation.
+
+### Deletion requirements
+
+- Deletion is available through the web UI, HTTP API and Bun CLI.
+- The UI requires a confirmation step and identifies the capture before deletion.
+- The HTTP API requires an explicit confirmation value in the request and returns `409 Conflict` when the capture cannot be deleted safely.
+- The CLI requires `--confirm`; it must not prompt when JSON output is requested.
+- The database deletes the capture and dependent `capture_aliases`, `metadata`, `capture_tags` and FTS5 content atomically.
+- Deleting one capture does not delete other captures with the same normalised URL or content hash.
+- Jobs keep their diagnostic history. A job that referred to the deleted capture keeps a nullable `capture_id` and records that the capture was deleted.
+- A deletion response reports the deleted capture ID, source URL and whether `urls.latest_capture` changed.
+- Deletion is permanent. Backup and restore are the recovery mechanism.
+- ArchiveBox provenance rows are not deleted through the capture endpoint. Imported captures require the migration tooling to preserve a terminal, auditable source outcome.
 
 ## ArchiveBox migration
 
@@ -355,6 +380,7 @@ The service must expose health, queue depth, capture duration, import counts and
 - Jobs have explicit `queued`, `running`, `succeeded`, `failed` and `cancelled` states.
 - A startup recovery pass returns abandoned running jobs to a resumable state.
 - Duplicate submissions use idempotency keys or normalised URL checks.
+- Capture deletion requires explicit confirmation and uses one transaction.
 - Database writes use transactions and foreign-key enforcement.
 - `PRAGMA integrity_check` and content-hash verification are exposed through the CLI.
 - Schema migrations are ordered, transactional where SQLite permits, and covered by upgrade tests.
@@ -401,6 +427,14 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [ ] The final reconciliation report matches the source snapshot count.
 - [ ] A statistically useful sample from each source format opens successfully on iOS and desktop browsers.
 - [ ] ArchiveBox is not retired until the imported database has been backed up and restored on a clean instance.
+
+### Capture deletion
+
+- [ ] A capture can be deleted through the UI, HTTP API and CLI only after explicit confirmation.
+- [ ] Deletion removes aliases, metadata, tag relations and the FTS5 row in one transaction.
+- [ ] Deleting the latest capture selects the newest remaining successful capture for that URL.
+- [ ] Job diagnostics and ArchiveBox provenance remain auditable after capture deletion.
+- [ ] A restored SQLite backup recovers a deleted capture without an asset tree.
 
 ### Exports
 
