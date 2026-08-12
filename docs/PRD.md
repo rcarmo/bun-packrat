@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-12T17:19:22Z
+updated: 2026-08-12T21:37:27Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -179,6 +179,23 @@ The archive UI must provide:
 
 Search results must render server-side or as progressively enhanced HTML so the index remains usable in iOS Safari with minimal JavaScript.
 
+#### Sorting and pagination
+
+The archive index and `GET /api/captures` use the same sorting and pagination rules:
+
+- `newest` is the default for an unsearched article list: `captured_at` descending, then capture ID descending.
+- `oldest` sorts by `captured_at` ascending, then capture ID ascending.
+- `relevance` is available when a full-text query is present and sorts by FTS5 rank. Capture timestamp descending and capture ID descending provide deterministic tie-breaking.
+- The selected sort order remains active when the user changes pages or filters.
+- The default page size is 50 captures. The API accepts a `limit` from 1 to 200; the web UI may offer a smaller set of page-size choices within that range.
+- Paging is server-side. The initial implementation uses a zero-based `offset`; clients must not need to load the complete result set.
+- Previous and next links preserve the full-text query, filters, sort order and page size.
+- A page must not repeat or omit captures when several captures have the same timestamp.
+- The HTML index displays the current result range and total matching capture count.
+- The API response includes `limit`, `offset`, total matching count, and previous/next offsets when those pages exist.
+- An offset beyond the final result returns an empty capture list with valid paging metadata, not an error.
+- Deleting the final item on a page returns the user to the nearest preceding non-empty page.
+
 ### API and command line
 
 Minimum HTTP API:
@@ -187,7 +204,7 @@ Minimum HTTP API:
 POST   /api/captures              queue one URL
 POST   /api/import/archivebox     start or resume an import
 GET    /api/jobs/:id              inspect progress and errors
-GET    /api/captures              search and filter
+GET    /api/captures              search, filter, sort and page captures
 GET    /api/captures/:id          retrieve metadata
 DELETE /api/captures/:id          delete one capture after explicit confirmation
 GET    /captures/:id              view archived HTML
@@ -209,6 +226,8 @@ archive delete <capture-id> --confirm
 archive verify [--all]
 archive backup <destination.sqlite>
 ```
+
+`GET /api/captures` accepts `q`, `url`, `domain`, `title`, `tag`, `dateFrom`, `dateTo`, `status`, `mode`, `sort`, `limit` and `offset`. The response contains the capture rows and paging metadata defined above.
 
 Import, capture and delete commands must support JSON output for automation.
 
@@ -427,6 +446,15 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [ ] The final reconciliation report matches the source snapshot count.
 - [ ] A statistically useful sample from each source format opens successfully on iOS and desktop browsers.
 - [ ] ArchiveBox is not retired until the imported database has been backed up and restored on a clean instance.
+
+### Article list sorting and pagination
+
+- [ ] The unsearched archive list defaults to newest first with deterministic ID tie-breaking.
+- [ ] Full-text results support relevance, newest and oldest sorting.
+- [ ] Previous and next navigation preserves all active search terms, filters, sort order and page size.
+- [ ] The HTML index displays the current result range and total matching count.
+- [ ] The captures API returns `limit`, `offset`, total count and previous/next offsets.
+- [ ] Equal timestamps, empty result pages and deletion of the last item on a page behave as specified.
 
 ### Capture deletion
 
