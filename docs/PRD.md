@@ -475,29 +475,29 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### Markdown reading mode
 
-- [ ] Every newly captured image records its original resolved HTTP or HTTPS URL before inlining.
-- [ ] Capture details can switch between archived HTML and server-rendered Markdown.
-- [ ] Raw Markdown references original image URLs and contains no embedded data URLs or local asset paths.
-- [ ] Remote images remain disabled until the user accepts the network and privacy warning for that view.
-- [ ] The offline Markdown ZIP continues to contain local relative asset references.
-- [ ] Missing or invalid original image URLs produce deterministic alt-text output and a capture warning.
+- [x] Every newly captured image records its original resolved HTTP or HTTPS URL before inlining.
+- [x] Capture details can switch between archived HTML and server-rendered Markdown.
+- [x] Raw Markdown references original image URLs and contains no embedded data URLs or local asset paths.
+- [x] Remote images remain disabled until the user accepts the network and privacy warning for that view.
+- [x] The offline Markdown ZIP continues to contain local relative asset references.
+- [x] Missing or invalid original image URLs produce deterministic alt-text output and a capture warning.
 
 ### Article list sorting and pagination
 
-- [ ] The unsearched archive list defaults to newest first with deterministic ID tie-breaking.
-- [ ] Full-text results support relevance, newest and oldest sorting.
-- [ ] Previous and next navigation preserves all active search terms, filters, sort order and page size.
-- [ ] The HTML index displays the current result range and total matching count.
-- [ ] The captures API returns `limit`, `offset`, total count and previous/next offsets.
-- [ ] Equal timestamps, empty result pages and deletion of the last item on a page behave as specified.
+- [x] The unsearched archive list defaults to newest first with deterministic ID tie-breaking.
+- [x] Full-text results support relevance, newest and oldest sorting.
+- [x] Previous and next navigation preserves all active search terms, filters, sort order and page size.
+- [x] The HTML index displays the current result range and total matching count.
+- [x] The captures API returns `limit`, `offset`, total count and previous/next offsets.
+- [x] Equal timestamps, empty result pages and deletion of the last item on a page behave as specified.
 
 ### Capture deletion
 
-- [ ] A capture can be deleted through the UI, HTTP API and CLI only after explicit confirmation.
-- [ ] Deletion removes aliases, metadata, tag relations and the FTS5 row in one transaction.
-- [ ] Deleting the latest capture selects the newest remaining successful capture for that URL.
-- [ ] Job diagnostics and ArchiveBox provenance remain auditable after capture deletion.
-- [ ] A restored SQLite backup recovers a deleted capture without an asset tree.
+- [x] A capture can be deleted through the UI, HTTP API and CLI only after explicit confirmation.
+- [x] Deletion removes aliases, metadata, tag relations and the FTS5 row in one transaction.
+- [x] Deleting the latest capture selects the newest remaining successful capture for that URL.
+- [x] Job diagnostics and ArchiveBox provenance remain auditable after capture deletion.
+- [x] A restored SQLite backup recovers a deleted capture without an asset tree.
 
 ### Exports
 

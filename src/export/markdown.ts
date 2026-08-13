@@ -15,7 +15,7 @@
 import { parseHTML } from 'linkedom';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
-import { getCaptureById, getCaptureHtml } from '../db/index.js';
+import { getCaptureById, getCaptureHtml, getCaptureImageSources } from '../db/index.js';
 import { slugify } from './html.js';
 
 export interface MarkdownExportResult {
@@ -112,10 +112,11 @@ function buildZip(entries: ZipEntry[]): Uint8Array {
 // HTML → Markdown walker
 // ---------------------------------------------------------------------------
 
-function htmlToMarkdown(html: string): { markdown: string; assets: Array<{ name: string; data: Uint8Array }> } {
+export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ originalUrl: string | null; alt: string; title: string | null }> } = {}): { markdown: string; assets: Array<{ name: string; data: Uint8Array }> } {
   const { document } = parseHTML(html);
   const assets: Array<{ name: string; data: Uint8Array }> = [];
   let assetIndex = 0;
+  let imageIndex = 0;
 
   function walk(node: any, depth = 0): string {
     if (!node) return '';
@@ -161,12 +162,20 @@ function htmlToMarkdown(html: string): { markdown: string; assets: Array<{ name:
         const href = node.getAttribute('href') ?? '';
         const text = inner().trim();
         if (!text) return '';
-        if (href && !href.startsWith('#')) return `[${text}](${href})`;
+        if (href && !href.startsWith('#')) return `[${text}](<${escapeMarkdownDestination(href)}>)`;
         return text;
       }
       case 'img': {
         const src = node.getAttribute('src') ?? '';
         const alt = node.getAttribute('alt') ?? '';
+        const title = node.getAttribute('title') ?? '';
+        const remote = opts.remoteImages?.[imageIndex++];
+        if (opts.remoteImages) {
+          const remoteAlt = escapeMarkdownText(remote?.alt ?? alt);
+          if (!remote?.originalUrl) return remoteAlt ? `*[Image: ${remoteAlt}]*` : '';
+          const remoteTitle = remote.title ? ` "${remote.title.replace(/"/g, '\\"')}"` : '';
+          return `![${remoteAlt}](<${escapeMarkdownDestination(remote.originalUrl)}>${remoteTitle})`;
+        }
         if (src.startsWith('data:')) {
           // Extract data: URL asset
           const match = src.match(/^data:([^;]+);base64,(.+)$/s);
@@ -176,10 +185,10 @@ function htmlToMarkdown(html: string): { markdown: string; assets: Array<{ name:
             const name = `img-${assetIndex++}.${ext}`;
             const bytes = Buffer.from(match[2], 'base64');
             assets.push({ name, data: new Uint8Array(bytes) });
-            return `![${alt}](assets/${name})`;
+            return `![${escapeMarkdownText(alt)}](<assets/${name}>${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
           }
         }
-        if (src) return `![${alt}](${src})`;
+        if (src) return `![${escapeMarkdownText(alt)}](<${escapeMarkdownDestination(src)}>${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
         return '';
       }
       case 'ul': {
@@ -230,12 +239,23 @@ function htmlToMarkdown(html: string): { markdown: string; assets: Array<{ name:
     return `\n\n${header}\n${sep}\n${body}\n\n`;
   }
 
-  const body = document.body ?? document.documentElement;
+  // Captures assembled by Packrat include an archive metadata header and a
+  // semantic content wrapper. Reading/export modes should contain only the
+  // captured document, not Packrat's synthetic chrome.
+  const body = document.querySelector?.('.packrat-content') ?? document.body ?? document.documentElement;
   const markdown = walk(body)
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
   return { markdown, assets };
+}
+
+function escapeMarkdownText(value: string): string {
+  return value.replace(/([\\\[\]*_`])/g, '\\$1');
+}
+
+function escapeMarkdownDestination(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/>/g, '\\>');
 }
 
 function mimeToExt(mime: string): string {
@@ -250,6 +270,19 @@ function mimeToExt(mime: string): string {
 // ---------------------------------------------------------------------------
 // Public export
 // ---------------------------------------------------------------------------
+
+export async function renderRemoteMarkdown(db: Database, captureId: number): Promise<{ markdown: string; title: string } | null> {
+  const meta = getCaptureById(db, captureId);
+  if (!meta || meta.status !== 'succeeded') return null;
+  const row = getCaptureHtml(db, captureId);
+  if (!row?.html) return null;
+  const htmlBytes = row.compression === 'gzip'
+    ? Buffer.from(Bun.gunzipSync(Buffer.from(row.html)))
+    : Buffer.from(row.html);
+  const imageSources = getCaptureImageSources(db, captureId);
+  const { markdown } = htmlToMarkdown(htmlBytes.toString('utf-8'), { remoteImages: imageSources });
+  return { markdown, title: meta.title ?? `capture-${captureId}` };
+}
 
 export async function exportMarkdownZip(
   db: Database,

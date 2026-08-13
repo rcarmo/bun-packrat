@@ -9,6 +9,7 @@ import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import type { CaptureRow, UrlRow, JobRow } from '../types.js';
+import { normaliseUrl } from '../capture/url.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +50,7 @@ export function runMigrations(db: Database): void {
     { version: 1, file: '001_initial.sql' },
     { version: 2, file: '002_constraints.sql' },
     { version: 3, file: '003_application_features.sql' },
+    { version: 4, file: '004_query_indexes.sql' },
   ];
 
   for (const { version, file } of migrations) {
@@ -61,11 +63,29 @@ export function runMigrations(db: Database): void {
 
     const sql = readFileSync(sqlPath, 'utf-8');
 
-    // Each migration is atomic. SQLite supports transactional DDL for the
-    // statements used here; the migration records its own version row.
-    db.transaction(() => db.exec(sql))();
+    // Each migration is atomic. Migration 3 predates conditional ADD COLUMN
+    // support, so repair databases where one or more columns were added before
+    // its schema_migrations row was committed.
+    db.transaction(() => {
+      if (version === 3) ensureApplicationFeatureColumns(db);
+      db.exec(sql);
+    })();
 
     console.log(`[db] Applied migration ${version}: ${file}`);
+  }
+}
+
+function ensureApplicationFeatureColumns(db: Database): void {
+  const existing = new Set(
+    db.query<{ name: string }, []>('PRAGMA table_info(captures)').all().map((column) => column.name),
+  );
+  const columns = [
+    ['error', 'TEXT'],
+    ['note', 'TEXT'],
+    ['capture_duration_ms', 'INTEGER'],
+  ] as const;
+  for (const [name, type] of columns) {
+    if (!existing.has(name)) db.exec(`ALTER TABLE captures ADD COLUMN ${name} ${type}`);
   }
 }
 
@@ -183,6 +203,11 @@ export interface CaptureQueryOptions {
   sort?: 'newest' | 'oldest' | 'relevance';
 }
 
+export interface CapturePage {
+  rows: CaptureRow[];
+  total: number;
+}
+
 export function listCaptures(db: Database, opts: CaptureQueryOptions = {}): CaptureRow[] {
   return queryCaptures(db, null, opts);
 }
@@ -195,7 +220,15 @@ export function searchCaptures(
   return queryCaptures(db, query, opts);
 }
 
+export function countCaptures(db: Database, query: string | null, opts: CaptureQueryOptions = {}): number {
+  return queryCapturePage(db, query, { ...opts, limit: 0, offset: 0 }, true).total;
+}
+
 function queryCaptures(db: Database, query: string | null, opts: CaptureQueryOptions): CaptureRow[] {
+  return queryCapturePage(db, query, opts, false).rows;
+}
+
+function queryCapturePage(db: Database, query: string | null, opts: CaptureQueryOptions, countOnly: boolean): CapturePage {
   const where: string[] = [];
   const params: Array<string | number> = [];
   const joins = [query ? 'JOIN captures_fts f ON f.rowid = c.id' : ''];
@@ -207,25 +240,30 @@ function queryCaptures(db: Database, query: string | null, opts: CaptureQueryOpt
   if (opts.domain) { where.push('u.domain = ?'); params.push(opts.domain); }
   if (opts.title) { where.push("c.title LIKE ? ESCAPE '\\'"); params.push(`%${escapeLike(opts.title)}%`); }
   if (opts.url) { where.push("(c.source_url LIKE ? ESCAPE '\\' OR c.final_url LIKE ? ESCAPE '\\')"); const p = `%${escapeLike(opts.url)}%`; params.push(p, p); }
-  if (opts.dateFrom) { where.push('c.captured_at >= ?'); params.push(opts.dateFrom); }
-  if (opts.dateTo) { where.push('c.captured_at < datetime(?, \'+1 day\')'); params.push(opts.dateTo); }
+  if (opts.dateFrom) { where.push('datetime(c.captured_at) >= datetime(?)'); params.push(opts.dateFrom); }
+  if (opts.dateTo) { where.push('datetime(c.captured_at) < datetime(?, \'+1 day\')'); params.push(opts.dateTo); }
   if (opts.tag) {
     joins.push('JOIN capture_tags ct ON ct.capture_id = c.id JOIN tags t ON t.id = ct.tag_id');
     where.push('t.name = ?'); params.push(opts.tag);
   }
 
+  const from = `FROM captures c JOIN urls u ON u.id = c.url_id ${joins.filter(Boolean).join(' ')}`;
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  if (countOnly) {
+    const total = db.query<{ n: number }, any[]>(`SELECT COUNT(DISTINCT c.id) n ${from} ${whereSql}`).get(...params)?.n ?? 0;
+    return { rows: [], total };
+  }
+
   const sort = query && (opts.sort ?? 'relevance') === 'relevance'
-    ? 'bm25(captures_fts) ASC'
+    ? 'bm25(captures_fts) ASC, c.captured_at DESC, c.id DESC'
     : opts.sort === 'oldest' ? 'c.captured_at ASC, c.id ASC' : 'c.captured_at DESC, c.id DESC';
   params.push(opts.limit ?? 50, opts.offset ?? 0);
-
-  return db.query<CaptureRow, any[]>(`
-    SELECT c.*, u.domain
-    FROM captures c JOIN urls u ON u.id = c.url_id ${joins.filter(Boolean).join(' ')}
-    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+  const rows = db.query<CaptureRow, any[]>(`
+    SELECT c.*, u.domain ${from} ${whereSql}
     ORDER BY ${sort}
     LIMIT ? OFFSET ?
   `).all(...params);
+  return { rows, total: 0 };
 }
 
 function escapeLike(value: string): string {
@@ -249,6 +287,90 @@ export function getCaptureAliases(db: Database, captureId: number): Array<{ url:
   return db.query<{ url: string; kind: string }, [number]>(
     'SELECT url, kind FROM capture_aliases WHERE capture_id = ? ORDER BY id',
   ).all(captureId);
+}
+
+export interface CaptureImageSource {
+  order: number;
+  originalUrl: string | null;
+  alt: string;
+  title: string | null;
+  width: number | null;
+  height: number | null;
+}
+
+export function setCaptureImageSources(db: Database, captureId: number, images: CaptureImageSource[]): void {
+  db.exec(`INSERT INTO metadata (capture_id, key, value) VALUES (?, 'image_sources', ?)
+           ON CONFLICT(capture_id, key) DO UPDATE SET value=excluded.value`, [captureId, JSON.stringify(images)]);
+}
+
+export function getCaptureImageSources(db: Database, captureId: number): CaptureImageSource[] {
+  const row = db.query<{ value: string | null }, [number]>(
+    `SELECT value FROM metadata WHERE capture_id = ? AND key = 'image_sources'`,
+  ).get(captureId);
+  if (!row?.value) return [];
+  try { const parsed = JSON.parse(row.value); return Array.isArray(parsed) ? parsed : []; }
+  catch { return []; }
+}
+
+export interface DeleteCaptureResult {
+  id: number;
+  sourceUrl: string;
+  latestCaptureChanged: boolean;
+  newLatestCapture: number | null;
+  orphanUrlRemoved: boolean;
+}
+
+export function getCaptureDeleteImpact(db: Database, id: number) {
+  const capture = getCaptureById(db, id);
+  if (!capture) return null;
+  return {
+    id: capture.id,
+    title: capture.title,
+    sourceUrl: capture.source_url,
+    capturedAt: capture.captured_at,
+    aliases: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM capture_aliases WHERE capture_id=?').get(id)?.n ?? 0,
+    metadata: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM metadata WHERE capture_id=?').get(id)?.n ?? 0,
+    tags: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM capture_tags WHERE capture_id=?').get(id)?.n ?? 0,
+    jobs: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM jobs WHERE capture_id=?').get(id)?.n ?? 0,
+  };
+}
+
+export function deleteCapture(db: Database, id: number): DeleteCaptureResult | null {
+  const capture = getCaptureById(db, id);
+  if (!capture) return null;
+  return db.transaction(() => {
+    const url = db.query<{ latest_capture: number | null; normalised: string }, [number]>('SELECT latest_capture, normalised FROM urls WHERE id=?').get(capture.url_id);
+    const latestCaptureChanged = url?.latest_capture === id;
+    db.exec('UPDATE jobs SET capture_id=NULL, result=json_set(CASE WHEN json_valid(result) THEN result ELSE \'{}\' END, \'$.captureDeleted\', 1, \'$.deletedCaptureId\', ?) WHERE capture_id=?', [id, id]);
+    db.exec('UPDATE archivebox_imports SET capture_id=NULL, outcome_detail=COALESCE(outcome_detail || \'; \', \'\') || ? WHERE capture_id=?', [`capture ${id} deleted`, id]);
+    if (latestCaptureChanged) db.exec('UPDATE urls SET latest_capture=NULL WHERE id=?', [capture.url_id]);
+    db.exec('DELETE FROM captures WHERE id=?', [id]);
+    const replacement = db.query<{ id: number }, [number]>(`
+      SELECT id FROM captures WHERE url_id=? AND status='succeeded'
+      ORDER BY captured_at DESC, id DESC LIMIT 1
+    `).get(capture.url_id)?.id ?? null;
+    if (latestCaptureChanged) {
+      db.exec(`UPDATE urls SET latest_capture=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, [replacement, capture.url_id]);
+    }
+    const captureReferences = db.query<{ n: number }, [number]>(
+      'SELECT COUNT(*) n FROM captures WHERE url_id=?',
+    ).get(capture.url_id)?.n ?? 0;
+    const jobReference = url ? jobReferencesNormalisedUrl(db, url.normalised) : false;
+    const orphanUrlRemoved = captureReferences === 0 && !jobReference;
+    if (orphanUrlRemoved) db.exec('DELETE FROM urls WHERE id=?', [capture.url_id]);
+    return { id, sourceUrl: capture.source_url, latestCaptureChanged, newLatestCapture: replacement, orphanUrlRemoved };
+  })();
+}
+
+function jobReferencesNormalisedUrl(db: Database, normalisedUrl: string): boolean {
+  const rows = db.query<{ url: string }, []>(`
+    SELECT json_extract(payload, '$.url') url FROM jobs
+    WHERE json_valid(payload) AND json_type(payload, '$.url') = 'text'
+  `).all();
+  return rows.some((row) => {
+    try { return normaliseUrl(row.url) === normalisedUrl; }
+    catch { return false; }
+  });
 }
 
 export function updateCaptureNote(db: Database, captureId: number, note: string | null): void {

@@ -6,7 +6,7 @@ Replaces a 35 GB / 130,000-file ArchiveBox deployment with one SQLite database a
 
 ## Status
 
-All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 85 tests passing across 10 files, including real `epubcheck` validation when installed.
+All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 98 tests passing across 11 files, including real `epubcheck` validation when installed.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -112,10 +112,18 @@ POST   /api/captures
 GET    /api/captures
        Query: q, limit, offset, url, domain, title, tag, dateFrom, dateTo,
               status, mode, sort=newest|oldest|relevance
-       Response: { "captures": [...] }
+       Response: { "captures": [...], "total": N, "limit": N, "offset": N,
+                   "previousOffset": N|null, "nextOffset": N|null }
 
 GET    /api/captures/:id
-       Response: capture metadata, warnings, note, aliases and provenance JSON
+       Response: capture metadata, warnings, note, aliases, provenance and deletion impact
+DELETE /api/captures/:id
+       Body: { "confirm": "<capture-id>" }; permanently deletes the capture
+
+GET    /captures/:id/markdown
+       Server-rendered Markdown; original remote images disabled until enabled
+GET    /captures/:id/markdown.raw
+       Raw Markdown referencing original image URLs
 
 GET    /bookmarklet.js
        Bookmarklet payload; save as javascript:(()=>{...contents...})()
@@ -179,6 +187,7 @@ bun run src/cli/index.ts <command> [args]
 |---|---|
 | `capture <url> [--force]` | Archive a URL; reuse a fresh capture unless forced (JSON output) |
 | `search <query> [--domain/--tag/--mode/--status/--sort]` | Filtered full-text search, returns JSON |
+| `delete <id> --confirm` | Permanently delete one capture and dependent data; returns JSON |
 | `list [--limit N]` | List recent successful captures (default 20) |
 | `export <id> --format html\|md\|epub\|pdf [--output path]` | Export a capture; stdout if `--output` omitted |
 | `backup <dest.sqlite>` | Consistent backup via `VACUUM INTO` |
@@ -254,7 +263,8 @@ All exports derive from the stored HTML BLOB in SQLite. No separate asset tree i
 | Format | Implementation |
 |---|---|
 | HTML | Decompress stored BLOB → stream as `text/html` |
-| Markdown + ZIP | Parse stored HTML with linkedom → convert to Markdown → extract data: URL images → ZIP |
+| Markdown view | Use stored image provenance to emit Markdown with original URLs; remote images gated per view |
+| Markdown + ZIP | Parse stored HTML with linkedom → convert to Markdown → extract data: URL images → offline ZIP |
 | EPUB 3 | Parse stored HTML → extract assets → build EPUB ZIP (pure Bun, no external tools) |
 | PDF | Write HTML to temp file → Playwright print CSS → stream PDF → delete temp file |
 
@@ -267,7 +277,7 @@ An in-process poller (`JobQueue`) polls the `jobs` table on a configurable inter
 ## Testing
 
 ```bash
-bun test                    # all 85 tests (epubcheck test skips if unavailable)
+bun test                    # all 98 tests (epubcheck test skips if unavailable)
 bun test tests/db.test.ts   # schema and database helpers
 bun test tests/url.test.ts  # URL normaliser and SSRF guard
 bun test tests/sanitize.test.ts   # HTML sanitiser (hostile-input coverage)
@@ -278,6 +288,7 @@ bun test tests/epub.test.ts       # EPUB 3 export (structure and epubcheck compl
 bun test tests/assets.test.ts     # absolute links + tracker removal
 bun test tests/upgrade.test.ts    # migration upgrade + standalone backup restore
 bun test tests/overlays.test.ts   # overlay removal must preserve newsletter articles
+bun test tests/features.test.ts   # deletion, paging order, Markdown image provenance
 ```
 
 ---

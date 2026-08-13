@@ -1,8 +1,6 @@
 -- Migration 003: non-import PRD application features
-
-ALTER TABLE captures ADD COLUMN error TEXT;
-ALTER TABLE captures ADD COLUMN note TEXT;
-ALTER TABLE captures ADD COLUMN capture_duration_ms INTEGER;
+-- Columns are added conditionally by runMigrations() so interrupted/manual
+-- pre-release upgrades can safely resume without duplicate-column failures.
 
 CREATE INDEX IF NOT EXISTS idx_captures_mode ON captures(mode);
 CREATE INDEX IF NOT EXISTS idx_captures_final_url ON captures(final_url);

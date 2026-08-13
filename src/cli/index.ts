@@ -17,7 +17,7 @@
 import { createHash } from 'crypto';
 import { mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
-import { openDatabase, runMigrations, searchCaptures, listCaptures, getCaptureById, getCaptureHtml } from '../db/index.js';
+import { openDatabase, runMigrations, searchCaptures, listCaptures, getCaptureById, getCaptureHtml, getCaptureDeleteImpact, deleteCapture } from '../db/index.js';
 import { capturePage } from '../capture/pipeline.js';
 import { exportHtml } from '../export/html.js';
 import { exportMarkdownZip } from '../export/markdown.js';
@@ -154,6 +154,20 @@ switch (command) {
       console.error(JSON.stringify({ ok: false, error: err?.message ?? String(err) }));
       process.exit(1);
     }
+    break;
+  }
+
+  // ── delete ───────────────────────────────────────────────────────────────
+  case 'delete': {
+    const id = Number(args[1]);
+    if (!Number.isSafeInteger(id) || id <= 0 || !args.includes('--confirm')) {
+      console.error(JSON.stringify({ ok: false, error: 'Usage: packrat delete <id> --confirm' }));
+      process.exit(1);
+    }
+    const impact = getCaptureDeleteImpact(db, id);
+    if (!impact) { console.error(JSON.stringify({ ok: false, error: 'Capture not found', id })); process.exit(1); }
+    const result = deleteCapture(db, id);
+    console.log(JSON.stringify({ ok: true, deleted: result, impact }, null, 2));
     break;
   }
 
@@ -295,6 +309,7 @@ Commands:
   export  <id> --format <fmt>        Export a capture
                 --format html|md|epub|pdf
                 --output <path>      (optional; stdout if omitted)
+  delete  <id> --confirm             Permanently delete one capture (JSON output)
   backup  <dest.sqlite>              VACUUM INTO consistent backup
   verify  [--all] [--id <N>]         SQLite integrity + content-hash check
   migrate                            Run pending schema migrations

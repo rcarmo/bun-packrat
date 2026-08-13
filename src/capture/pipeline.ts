@@ -22,6 +22,7 @@ import {
   updateLatestCapture,
   findRecentCapture,
   addCaptureAlias,
+  setCaptureImageSources,
 } from '../db/index.js';
 
 export interface PipelineOptions {
@@ -183,7 +184,7 @@ export async function capturePage(
     }
 
     // 8. Inline external assets
-    const { html: htmlWithAssets, warnings: assetWarnings } = await inlineAssets(
+    const { html: htmlWithAssets, warnings: assetWarnings, imageSources } = await inlineAssets(
       extracted.articleHtml ?? cleanedFullPageHtml,
       {
         baseUrl: finalUrl,
@@ -196,8 +197,10 @@ export async function capturePage(
     const { html: sanitisedHtml, warnings: sanitiseWarnings } = sanitizeHtml(htmlWithAssets);
     warnings.push(...sanitiseWarnings);
 
-    // 10. Assemble final document
+    // 10. Assemble final document. Embed a reproducible hash of the sanitised
+    // body; the database content_hash below covers the complete document.
     const capturedAt = new Date().toISOString();
+    const bodyContentHash = createHash('sha256').update(sanitisedHtml, 'utf-8').digest('hex');
     const finalHtml = assembleHtml(sanitisedHtml, {
       title: extracted.title,
       author: extracted.author,
@@ -210,6 +213,7 @@ export async function capturePage(
       captureId,
       mode: extracted.mode,
       captureTool: TOOL_VERSION,
+      bodyContentHash,
     });
 
     // Size guard: fail explicitly rather than storing an oversized body.
@@ -278,6 +282,7 @@ export async function capturePage(
       updateLatestCapture(db, urlRow.id, captureId);
       addCaptureAlias(db, captureId, rawUrl, 'original');
       if (finalUrl !== rawUrl) addCaptureAlias(db, captureId, finalUrl, 'redirect');
+      setCaptureImageSources(db, captureId, imageSources);
     })();
 
     const result: CaptureResult = {

@@ -20,11 +20,21 @@ export interface InlineAssetsOptions {
   concurrency?: number;
 }
 
+export interface ImageSourceRecord {
+  order: number;
+  originalUrl: string | null;
+  alt: string;
+  title: string | null;
+  width: number | null;
+  height: number | null;
+}
+
 export interface InlineAssetsResult {
   html: string;
   inlined: number;
   skipped: number;
   warnings: string[];
+  imageSources: ImageSourceRecord[];
 }
 
 /**
@@ -43,6 +53,7 @@ export async function inlineAssets(
   let inlined = 0;
   let skipped = 0;
   const warnings: string[] = [];
+  const imageSources: ImageSourceRecord[] = [];
 
   /** Resolve a possibly-relative URL against the page base */
   function resolve(src: string): string | null {
@@ -78,11 +89,7 @@ export async function inlineAssets(
 
       let resp: Response;
       try {
-        resp = await fetch(resolved, {
-          signal: controller.signal,
-          redirect: 'error',
-          headers: { 'User-Agent': 'packrat-archiver/0.1' },
-        });
+        resp = await fetchWithSafeRedirects(resolved, controller.signal);
       } finally {
         clearTimeout(timer);
       }
@@ -156,7 +163,7 @@ export async function inlineAssets(
 
   // img[src] and img[srcset] → inline first src only. Remove obvious tracking
   // pixels before downloading them.
-  document.querySelectorAll('img[src]').forEach((el) => {
+  document.querySelectorAll('img').forEach((el, order) => {
     const width = Number(el.getAttribute('width') ?? NaN);
     const height = Number(el.getAttribute('height') ?? NaN);
     if ((Number.isFinite(width) && width <= 2) || (Number.isFinite(height) && height <= 2)) {
@@ -165,7 +172,21 @@ export async function inlineAssets(
       skipped++;
       return;
     }
-    const src = el.getAttribute('src');
+    const src = chooseImageSource(el as Element, Number.isFinite(width) ? width : null);
+    const originalUrl = src ? resolve(src) : null;
+    const validOriginal = originalUrl?.startsWith('http://') || originalUrl?.startsWith('https://')
+      ? originalUrl : null;
+    imageSources.push({
+      order,
+      originalUrl: validOriginal,
+      alt: el.getAttribute('alt') ?? '',
+      title: el.getAttribute('title'),
+      width: Number.isFinite(width) ? width : null,
+      height: Number.isFinite(height) ? height : null,
+    });
+    if (!validOriginal) {
+      warnings.push(`Image ${order + 1} has no valid original URL; Markdown view will use alt text`);
+    }
     if (src && !src.startsWith('data:')) tasks.push({ el: el as Element, attr: 'src', src });
   });
 
@@ -194,7 +215,61 @@ export async function inlineAssets(
     inlined,
     skipped,
     warnings,
+    imageSources,
   };
+}
+
+function chooseImageSource(el: Element, displayWidth: number | null): string | null {
+  const srcset = el.getAttribute('srcset');
+  if (srcset) {
+    // Candidate URLs may contain commas (for example Substack transforms).
+    // A delimiter comma is the one after an optional w/x descriptor. Accept a
+    // descriptorless candidate as the valid 1x fallback too.
+    const candidates: Array<{ url: string; width: number | null; density: number }> = [];
+    const described = /(?:^|,\s*)(\S+)\s+(\d+(?:\.\d+)?)(w|x)(?=\s*,|\s*$)/g;
+    for (const match of srcset.matchAll(described)) {
+      const amount = Number.parseFloat(match[2]);
+      candidates.push({ url: match[1], width: match[3] === 'w' ? amount : null, density: match[3] === 'x' ? amount : 1 });
+    }
+    // Descriptorless candidates are valid 1x candidates. Only use this path
+    // when there are no described candidates, preserving comma-bearing URLs.
+    if (!candidates.length) {
+      for (const value of srcset.split(/,\s+/)) {
+        const url = value.trim();
+        if (url && !/\s/.test(url)) candidates.push({ url, width: null, density: 1 });
+      }
+    }
+    if (candidates.length) {
+      const widthCandidates = candidates.filter((candidate) => candidate.width !== null);
+      if (widthCandidates.length) {
+        widthCandidates.sort((a, b) => (a.width! - b.width!));
+        return (displayWidth
+          ? widthCandidates.find((candidate) => candidate.width! >= displayWidth)
+          : widthCandidates[widthCandidates.length - 1])?.url ?? widthCandidates[widthCandidates.length - 1].url;
+      }
+      candidates.sort((a, b) => b.density - a.density);
+      return candidates[0].url;
+    }
+  }
+  return el.getAttribute('src');
+}
+
+async function fetchWithSafeRedirects(initialUrl: string, signal: AbortSignal): Promise<Response> {
+  let current = initialUrl;
+  for (let redirect = 0; redirect <= 5; redirect++) {
+    await guardSsrfResolved(current);
+    const resp = await fetch(current, {
+      signal,
+      redirect: 'manual',
+      headers: { 'User-Agent': 'packrat-archiver/0.1' },
+    });
+    if (![301, 302, 303, 307, 308].includes(resp.status)) return resp;
+    const location = resp.headers.get('location');
+    await resp.body?.cancel().catch(() => {});
+    if (!location) throw new Error(`Asset redirect has no Location header: ${current}`);
+    current = new URL(location, current).toString();
+  }
+  throw new Error(`Asset exceeded redirect limit: ${initialUrl}`);
 }
 
 async function readResponseLimited(resp: Response, maxBytes: number): Promise<ArrayBuffer | null> {

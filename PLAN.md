@@ -2,7 +2,7 @@
 
 Project path: `/workspace/projects/bun-packrat`  
 PRD: `docs/PRD.md`  
-Status: **All actionable non-ArchiveBox scope complete — 85 tests passing across 10 files; Phases 3 and 5 deferred**
+Status: **All actionable non-ArchiveBox scope complete — 98 tests passing across 11 files; Phases 3 and 5 deferred**
 
 ---
 
@@ -45,6 +45,9 @@ Status: **All actionable non-ArchiveBox scope complete — 85 tests passing acro
 | Export routes on HTTP server | `src/server.ts` | ✅ |
 | Tags API | `src/server.ts` | ✅ |
 | Freshness reuse, forced recapture, aliases and notes | pipeline, DB, server | ✅ |
+| Permanent capture deletion (UI/API/CLI, latest repair, audit preservation) | DB, server, CLI | ✅ |
+| Markdown reading mode with original image provenance and privacy gate | capture, DB, export, server | ✅ |
+| Matching counts and deterministic paging metadata | DB, server | ✅ |
 | Idempotency keys and queued-job cancellation | DB, HTTP API | ✅ |
 | HTTP Basic auth required by default | `src/config.ts`, `src/server.ts` | ✅ |
 | Capture duration/import counts/status metrics | `src/server.ts` | ✅ |
@@ -118,11 +121,13 @@ bun-packrat/
 │   │   └── migrations/
 │   │       ├── 001_initial.sql        # schema: 11 tables, FTS5, triggers
 │   │       ├── 002_constraints.sql    # claim/tag indexes + FTS rebuild
-│   │       └── 003_application_features.sql # notes/errors/duration + indexes
+│   │       ├── 003_application_features.sql # notes/errors/duration + indexes
+│   │       └── 004_query_indexes.sql        # filtered browsing/history indexes
 │   ├── export/
 │   │   ├── epub.ts                    # EPUB 3 builder (pure Bun ZIP)
 │   │   ├── html.ts                    # HTML export helper
-│   │   ├── markdown.ts                # HTML → Markdown + ZIP packager
+│   │   ├── markdown.ts                # HTML → Markdown view + ZIP packager
+│   │   ├── render-markdown.ts         # safe generated-Markdown renderer
 │   │   └── pdf.ts                     # Playwright print → PDF
 │   ├── import/                        # (Phase 3) ArchiveBox importer — not yet implemented
 │   ├── queue/
@@ -133,6 +138,7 @@ bun-packrat/
 ├── tests/
 │   ├── db.test.ts                     # schema, migrations, query helpers
 │   ├── epub.test.ts                   # EPUB 3 export (structure + spec compliance)
+│   ├── features.test.ts               # delete/paging/Markdown provenance
 │   ├── markdown.test.ts               # Markdown + ZIP export
 │   ├── phase1.test.ts                 # Phase 1 integration pipeline
 │   ├── assets.test.ts                 # link normalisation + tracking pixels

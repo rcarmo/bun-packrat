@@ -10,10 +10,13 @@ import {
   getCaptureHtml, getCaptureById, listCaptures, searchCaptures,
   getCaptureTags, addTagToCapture, listTags, getJobById, getJobAttempts,
   createJob, getCaptureAliases, updateCaptureNote, cancelJob,
+  countCaptures, getCaptureDeleteImpact, deleteCapture,
 } from './db/index.js';
 import { JobQueue } from './queue/index.js';
 import { exportHtml, slugify } from './export/html.js';
-import { exportMarkdownZip } from './export/markdown.js';
+import { exportMarkdownZip, renderRemoteMarkdown } from './export/markdown.js';
+import { renderMarkdownHtml } from './export/render-markdown.js';
+import { resolveCaptureIndexPage } from './index-page.js';
 import { exportEpub } from './export/epub.js';
 import { exportPdf } from './export/pdf.js';
 import { loadConfig } from './config.js';
@@ -65,9 +68,20 @@ const server = Bun.serve({
       if (!acceptsHtml || url.searchParams.has('meta')) {
         const c = getCaptureById(db, id);
         if (!c) return json404();
-        return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, id), aliases: getCaptureAliases(db, id) });
+        return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, id), aliases: getCaptureAliases(db, id), deleteImpact: getCaptureDeleteImpact(db, id) });
       }
-      return serveCaptureHtml(db, id);
+      return serveCaptureHtml(db, id, url.searchParams.has('raw'));
+    }
+
+    const markdownMatch = path.match(/^\/captures\/(\d+)\/markdown(\.raw)?$/);
+    if (method === 'GET' && markdownMatch) {
+      const id = parseInt(markdownMatch[1], 10);
+      const rendered = await renderRemoteMarkdown(db, id);
+      if (!rendered) return json404('Capture not found or not yet succeeded');
+      if (markdownMatch[2]) {
+        return new Response(rendered.markdown, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } });
+      }
+      return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1');
     }
 
     const recaptureMatch = path.match(/^\/api\/captures\/(\d+)\/recapture$/);
@@ -137,7 +151,12 @@ const server = Bun.serve({
         const rows = q.trim()
           ? searchCaptures(db, q, filters)
           : listCaptures(db, filters);
-        return Response.json({ captures: rows.map(summariseCapture) });
+        const total = countCaptures(db, q.trim() || null, filters);
+        return Response.json({
+          captures: rows.map(summariseCapture), limit, offset, total,
+          previousOffset: offset > 0 ? Math.max(0, offset - limit) : null,
+          nextOffset: offset + rows.length < total ? offset + limit : null,
+        });
       } catch (err: any) {
         return Response.json({ error: `Invalid search query: ${err?.message ?? err}` }, { status: 400 });
       }
@@ -145,10 +164,21 @@ const server = Bun.serve({
 
     // ── API: get single capture metadata ──────────────────────────────────
     const apiCapMatch = path.match(/^\/api\/captures\/(\d+)$/);
-    if (method === 'GET' && apiCapMatch) {
-      const c = getCaptureById(db, parseInt(apiCapMatch[1], 10));
-      if (!c) return json404();
-      return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, c.id), aliases: getCaptureAliases(db, c.id) });
+    if (apiCapMatch) {
+      const id = parseInt(apiCapMatch[1], 10);
+      if (method === 'GET') {
+        const c = getCaptureById(db, id);
+        if (!c) return json404();
+        return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, c.id), aliases: getCaptureAliases(db, c.id), deleteImpact: getCaptureDeleteImpact(db, id) });
+      }
+      if (method === 'DELETE') {
+        const body = await safeJson(req);
+        if (body?.confirm !== true && body?.confirm !== String(id)) {
+          return Response.json({ error: 'Explicit deletion confirmation is required', impact: getCaptureDeleteImpact(db, id) }, { status: 409 });
+        }
+        const result = deleteCapture(db, id);
+        return result ? Response.json({ ok: true, ...result }) : json404('Capture not found');
+      }
     }
 
     // ── API: submit capture (queue a job) ────────────────────────────────
@@ -267,7 +297,7 @@ async function handleExport(
 // HTML rendering
 // ────────────────────────────────────────────────────────────────────────────
 
-async function serveCaptureHtml(db: Database, id: number): Promise<Response> {
+async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise<Response> {
   const row = getCaptureHtml(db, id);
   if (!row?.html) return new Response('Capture not found', { status: 404 });
 
@@ -278,6 +308,10 @@ async function serveCaptureHtml(db: Database, id: number): Promise<Response> {
     html = Buffer.from(row.html as unknown as Uint8Array);
   }
 
+  if (!raw) {
+    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Archived HTML</strong> · <a style="color:#9cf" href="/captures/${id}/markdown">Markdown</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Raw archive</a></nav>`;
+    html = Buffer.from(html.toString('utf-8').replace(/<body([^>]*)>/i, `<body$1>${toolbar}`));
+  }
   return new Response(new Blob([Uint8Array.from(html).buffer]), {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
@@ -296,18 +330,18 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
   const tag    = url.searchParams.get('tag') ?? '';
   const mode   = url.searchParams.get('mode') ?? '';
   const sort   = url.searchParams.get('sort') ?? (q ? 'relevance' : 'newest');
-  const limit  = 50;
+  const limit  = parseBoundedInt(url.searchParams.get('limit'), 50, 1, 200);
   const offset = parseBoundedInt(url.searchParams.get('offset'), 0, 0, 1_000_000);
 
   const filters = captureQueryOptions(url, limit, offset);
-  let rows: CaptureRow[];
-  try {
-    rows = q.trim()
-      ? searchCaptures(db, q, filters)
-      : listCaptures(db, filters);
-  } catch {
-    rows = [];
+  const page = resolveCaptureIndexPage(db, q, filters);
+  if (!page.error && page.effectiveOffset !== offset) {
+    const target = new URL(url);
+    if (page.effectiveOffset) target.searchParams.set('offset', String(page.effectiveOffset));
+    else target.searchParams.delete('offset');
+    return Response.redirect(target, 302);
   }
+  const { rows, matchingCount, error: searchError } = page;
 
   const totalCount = db
     .query<{ n: number }, []>(`SELECT COUNT(*) as n FROM captures WHERE status='succeeded'`)
@@ -317,18 +351,24 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
     .get()?.n ?? 0;
 
   const tags = listTags(db).slice(0, 20);
+  const filterHref = (key: string, value: string) => {
+    const params = new URLSearchParams(url.searchParams);
+    params.delete('offset'); params.delete('archive');
+    if (value) params.set(key, value); else params.delete(key);
+    return `/?${params.toString()}`;
+  };
 
   const tagCloud = tags.length
     ? `<div class="tag-cloud">${tags.map((t) =>
-        `<a class="tag${tag === t.name ? ' active' : ''}" href="/?tag=${encodeURIComponent(t.name)}">${esc(t.name)} <span>${t.count}</span></a>`
+        `<a class="tag${tag === t.name ? ' active' : ''}" href="${filterHref('tag', t.name)}">${esc(t.name)} <span>${t.count}</span></a>`
       ).join('')}</div>`
     : '';
 
   const items = rows.map((c) => `
     <li class="item">
-      <div class="item-title"><a href="/captures/${c.id}">${esc(c.title ?? '(no title)')}</a></div>
+      <div class="item-title"><a href="/captures/${c.id}">${esc(c.title ?? '(no title)')}</a> <a class="view-link" href="/captures/${c.id}/markdown">Markdown</a></div>
       <div class="item-meta">
-        <a class="domain" href="/?domain=${encodeURIComponent(getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
+        <a class="domain" href="${filterHref('domain', getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
         <span class="mode">${esc(c.mode)}</span>
         <span class="date">${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
         ${c.warnings ? '<span class="warnings" title="Capture has warnings">⚠</span>' : ''}
@@ -338,23 +378,22 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
         <a class="export-link" href="/captures/${c.id}/export/epub" title="Download EPUB">EPUB</a>
         <a class="export-link" href="/captures/${c.id}/export/pdf"  title="Download PDF">PDF</a>
         <button class="recapture" data-id="${c.id}" type="button" title="Capture again now">↻</button>
+        <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button" title="Delete capture">Delete</button>
       </div>
       ${c.warnings ? `<details class="capture-warnings"><summary>Capture warnings</summary><ul>${parseWarnings(c.warnings).map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
       ${c.error ? `<div class="capture-error">${esc(c.error)}</div>` : ''}
       ${c.excerpt ? `<div class="item-excerpt">${esc(c.excerpt.slice(0, 200))}</div>` : ''}
     </li>`).join('');
 
-  const queryBase = new URLSearchParams();
-  if (q) queryBase.set('q', q);
-  if (domain) queryBase.set('domain', domain);
-  if (tag) queryBase.set('tag', tag);
+  const queryBase = new URLSearchParams(url.searchParams);
+  queryBase.delete('offset');
   const pageHref = (nextOffset: number) => {
     const params = new URLSearchParams(queryBase);
     params.set('offset', String(nextOffset));
     return `/?${params.toString()}`;
   };
   const prevHref = offset > 0 ? pageHref(Math.max(0, offset - limit)) : null;
-  const nextHref = rows.length === limit ? pageHref(offset + limit) : null;
+  const nextHref = offset + rows.length < matchingCount ? pageHref(offset + limit) : null;
   const pagination = (prevHref || nextHref)
     ? `<div class="pagination">${prevHref ? `<a href="${prevHref}">← Previous</a>` : ''} ${nextHref ? `<a href="${nextHref}">Next →</a>` : ''}</div>`
     : '';
@@ -389,7 +428,7 @@ ul{list-style:none;margin:0;padding:0}
 .item-meta a{color:var(--muted);text-decoration:none}
 .item-meta a:hover{color:var(--accent)}
 .domain{font-weight:500}
-.export-link{font-size:.72rem;padding:.1rem .3rem;border:1px solid var(--border);border-radius:3px}.recapture{font-size:.72rem;padding:.1rem .35rem;background:transparent;color:var(--muted);border:1px solid var(--border)}
+.export-link,.view-link{font-size:.72rem;padding:.1rem .3rem;border:1px solid var(--border);border-radius:3px}.recapture,.delete{font-size:.72rem;padding:.1rem .35rem;background:transparent;color:var(--muted);border:1px solid var(--border)}.delete{color:#b42318}
 .item-excerpt{font-size:.82rem;color:var(--muted);margin-top:.3rem;line-height:1.4}.capture-warnings,.capture-error{font-size:.78rem;color:#9a6700;margin-top:.3rem}.capture-warnings ul{list-style:disc;padding-left:1.2rem}.capture-error{color:#b42318}
 .pagination{padding:.8rem 1rem;display:flex;gap:1rem;font-size:.9rem}
 .pagination a{color:var(--accent)}
@@ -399,9 +438,15 @@ ul{list-style:none;margin:0;padding:0}
 <header>
   <h1>📦 Packrat</h1>
   <form method="GET" action="/">
-    <input type="search" name="q" value="${esc(q)}" placeholder="Search archives…" autocomplete="off">
+    <input type="search" name="q" value="${esc(q)}" placeholder="Full-text search…" autocomplete="off">
+    <input type="search" name="title" value="${esc(url.searchParams.get('title') ?? '')}" placeholder="Title">
+    <input type="search" name="url" value="${esc(url.searchParams.get('url') ?? '')}" placeholder="URL">
+    <input type="date" name="dateFrom" value="${esc(url.searchParams.get('dateFrom') ?? '')}" aria-label="From date">
+    <input type="date" name="dateTo" value="${esc(url.searchParams.get('dateTo') ?? '')}" aria-label="To date">
+    <select name="status"><option value=""${!url.searchParams.get('status') ? ' selected' : ''}>Succeeded</option><option value="all"${url.searchParams.get('status') === 'all' ? ' selected' : ''}>All status</option><option value="failed"${url.searchParams.get('status') === 'failed' ? ' selected' : ''}>Failed</option></select>
     <select name="mode" aria-label="Capture mode"><option value=""${!mode ? ' selected' : ''}>All modes</option><option value="article"${mode === 'article' ? ' selected' : ''}>Article</option><option value="full_page"${mode === 'full_page' ? ' selected' : ''}>Full page</option><option value="metadata_only"${mode === 'metadata_only' ? ' selected' : ''}>Metadata only</option></select>
     <select name="sort" aria-label="Sort"><option value="relevance"${sort === 'relevance' ? ' selected' : ''}>Relevance</option><option value="newest"${sort === 'newest' ? ' selected' : ''}>Newest</option><option value="oldest"${sort === 'oldest' ? ' selected' : ''}>Oldest</option></select>
+    <select name="limit" aria-label="Page size"><option${limit === 25 ? ' selected' : ''}>25</option><option${limit === 50 ? ' selected' : ''}>50</option><option${limit === 100 ? ' selected' : ''}>100</option><option${limit === 200 ? ' selected' : ''}>200</option></select>
     <button type="submit">Search</button>
   </form>
 </header>
@@ -411,10 +456,23 @@ ul{list-style:none;margin:0;padding:0}
   <span id="capture-status" style="font-size:.82rem;color:var(--muted);padding:.3rem 0"></span>
 </form>
 ${tagCloud}
-<p class="count">${totalCount.toLocaleString()} archive${totalCount === 1 ? '' : 's'} · <a href="/?status=failed">${failedCount} failed capture${failedCount === 1 ? '' : 's'}</a>${q ? ` matching "${esc(q)}"` : ''}${domain ? ` from ${esc(domain)}` : ''}${tag ? ` tagged ${esc(tag)}` : ''}</p>
-<ul>${items || '<li style="padding:1rem;color:var(--muted)">No captures yet.</li>'}</ul>
+<p class="count">${matchingCount ? `${offset + 1}–${Math.min(offset + rows.length, matchingCount)} of ` : ''}${matchingCount.toLocaleString()} matching · ${totalCount.toLocaleString()} total · <a href="${filterHref('status', 'failed')}">${failedCount} failed</a>${q ? ` for "${esc(q)}"` : ''}${domain ? ` from ${esc(domain)}` : ''}${tag ? ` tagged ${esc(tag)}` : ''}</p>
+<ul>${searchError ? `<li class="capture-error" style="padding:1rem">${esc(searchError)}</li>` : items || '<li style="padding:1rem;color:var(--muted)">No captures yet.</li>'}</ul>
 ${pagination}
 <script>
+document.querySelectorAll('.delete').forEach((button) => button.addEventListener('click', async () => {
+  const impact = JSON.parse(button.dataset.impact || '{}');
+  const message = 'Permanently delete capture #' + button.dataset.id + '?\n\n' + button.dataset.title + '\n' + button.dataset.source + '\n' + button.dataset.time + '\n\nAffected relations: ' + (impact.aliases||0) + ' aliases, ' + (impact.metadata||0) + ' metadata rows, ' + (impact.tags||0) + ' tags. ' + (impact.jobs||0) + ' job records will be retained.';
+  if (!confirm(message)) return;
+  button.disabled = true;
+  const r = await fetch('/api/captures/' + button.dataset.id, {method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:button.dataset.id})});
+  if (r.ok) {
+    const params = new URLSearchParams(location.search);
+    const currentOffset = Number(params.get('offset') || 0);
+    if (document.querySelectorAll('.item').length === 1 && currentOffset > 0) params.set('offset', String(Math.max(0, currentOffset - Number(params.get('limit') || 50))));
+    location.search = params.toString();
+  } else { button.disabled=false; alert('Deletion failed'); }
+}));
 document.querySelectorAll('.recapture').forEach((button) => button.addEventListener('click', async () => {
   button.disabled = true;
   const r = await fetch('/api/captures/' + button.dataset.id + '/recapture', {method:'POST'});
@@ -499,7 +557,8 @@ function summariseCapture(c: any) {
 
 function captureQueryOptions(url: URL, limit: number, offset: number) {
   const sortRaw = url.searchParams.get('sort');
-  const sort = sortRaw === 'oldest' || sortRaw === 'relevance' ? sortRaw : 'newest';
+  const sort = sortRaw === 'oldest' || sortRaw === 'relevance' || sortRaw === 'newest'
+    ? sortRaw : undefined;
   return {
     limit, offset, sort,
     status: url.searchParams.get('status') ?? undefined,
@@ -511,6 +570,17 @@ function captureQueryOptions(url: URL, limit: number, offset: number) {
     dateFrom: url.searchParams.get('dateFrom') ?? undefined,
     dateTo: url.searchParams.get('dateTo') ?? undefined,
   } as const;
+}
+
+function renderMarkdownView(id: number, title: string, markdown: string, remoteImages: boolean): Response {
+  const content = renderMarkdownHtml(markdown, remoteImages);
+  const enableHref = `/captures/${id}/markdown?remote=1`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>body{max-width:760px;margin:auto;padding:1rem;font:17px/1.6 Georgia,serif;color:#222}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:#fff4ce;border:1px solid #e0b000}img{max-width:100%;height:auto}pre{overflow:auto;background:#f4f4f4;padding:1rem}code{background:#f4f4f4}.image-placeholder{display:block;padding:1rem;background:#eee;color:#555}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a></nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
+  return new Response(html, { headers: {
+    'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    'Content-Security-Policy': remoteImages ? "default-src 'none'; style-src 'unsafe-inline'; img-src https: http:; base-uri 'none'; frame-ancestors 'none'" : "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
+  }});
 }
 
 function parseWarnings(value: string | null): string[] {

@@ -24,7 +24,7 @@ describe('schema migrations', () => {
       .get();
     expect(row?.version).toBe(1);
     const latest = db.query<{ version: number }, []>('SELECT MAX(version) version FROM schema_migrations').get();
-    expect(latest?.version).toBe(3);
+    expect(latest?.version).toBe(4);
   });
 
   test('creates all required tables', () => {

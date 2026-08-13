@@ -25,6 +25,8 @@ export interface AssembleOptions {
   captureId?: number;
   mode: CaptureMode;
   captureTool?: string;
+  /** SHA-256 of the sanitised semantic body before document assembly. */
+  bodyContentHash?: string;
 }
 
 const ARCHIVE_STYLES = `
@@ -161,6 +163,7 @@ export function assembleHtml(bodyHtml: string, opts: AssembleOptions): string {
       : '',
     `<span class="label">Mode</span> ${escapeHtml(mode)}`,
     `<span class="label">Tool</span> ${escapeHtml(tool)}`,
+    opts.bodyContentHash ? `<span class="label">Content SHA-256</span> <code>${escapeHtml(opts.bodyContentHash)}</code>` : '',
   ]
     .filter(Boolean)
     .join('\n  ');
@@ -176,6 +179,7 @@ export function assembleHtml(bodyHtml: string, opts: AssembleOptions): string {
 <meta name="packrat:final-url" content="${escapeAttr(opts.finalUrl)}">
 <meta name="packrat:captured-at" content="${escapeAttr(captured)}">
 <meta name="packrat:mode" content="${escapeAttr(mode)}">
+${opts.bodyContentHash ? `<meta name="packrat:content-hash" content="${escapeAttr(opts.bodyContentHash)}">` : ''}
 ${opts.author ? `<meta name="packrat:author" content="${escapeAttr(opts.author)}">` : ''}
 ${opts.siteName ? `<meta name="packrat:site-name" content="${escapeAttr(opts.siteName)}">` : ''}
 ${opts.publishedAt ? `<meta name="packrat:published-at" content="${escapeAttr(opts.publishedAt)}">` : ''}
