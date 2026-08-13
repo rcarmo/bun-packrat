@@ -366,19 +366,24 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
 
   const items = rows.map((c) => `
     <li class="item">
-      <div class="item-title"><a href="/captures/${c.id}">${esc(c.title ?? '(no title)')}</a> <a class="view-link" href="/captures/${c.id}/markdown">Markdown</a></div>
+      <div class="item-title"><a href="/captures/${c.id}">${esc(c.title ?? '(no title)')}</a></div>
       <div class="item-meta">
-        <a class="domain" href="${filterHref('domain', getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
-        <span class="mode">${esc(c.mode)}</span>
-        <span class="date">${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
-        ${c.warnings ? '<span class="warnings" title="Capture has warnings">⚠</span>' : ''}
-        <a class="source-link" href="${esc(c.source_url)}" rel="noopener" target="_blank">↗</a>
-        <a class="export-link" href="/captures/${c.id}/export/html" title="Download HTML">⬇ HTML</a>
-        <a class="export-link" href="/captures/${c.id}/export/md"   title="Download Markdown ZIP">MD</a>
-        <a class="export-link" href="/captures/${c.id}/export/epub" title="Download EPUB">EPUB</a>
-        <a class="export-link" href="/captures/${c.id}/export/pdf"  title="Download PDF">PDF</a>
-        <button class="recapture" data-id="${c.id}" type="button" title="Capture again now">↻</button>
-        <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button" title="Delete capture">Delete</button>
+        <div class="item-facts">
+          <a class="domain" href="${filterHref('domain', getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
+          <span class="mode">${esc(c.mode)}</span>
+          <span class="date">${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
+          ${c.warnings ? '<span class="warnings" title="Capture has warnings">⚠</span>' : ''}
+        </div>
+        <div class="item-actions" role="group" aria-label="Actions for ${esc(c.title ?? 'capture')}">
+          <a class="view-link" href="/captures/${c.id}/markdown">Markdown</a>
+          <a class="source-link" href="${esc(c.source_url)}" rel="noopener" target="_blank" title="Open original page" aria-label="Open original page">↗</a>
+          <a class="export-link" href="/captures/${c.id}/export/html" title="Download HTML">⬇ HTML</a>
+          <a class="export-link" href="/captures/${c.id}/export/md"   title="Download Markdown ZIP">MD</a>
+          <a class="export-link" href="/captures/${c.id}/export/epub" title="Download EPUB">EPUB</a>
+          <a class="export-link" href="/captures/${c.id}/export/pdf"  title="Download PDF">PDF</a>
+          <button class="recapture" data-id="${c.id}" type="button" title="Capture again now" aria-label="Capture again now">↻</button>
+          <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button" title="Delete capture">Delete</button>
+        </div>
       </div>
       ${c.warnings ? `<details class="capture-warnings"><summary>Capture warnings</summary><ul>${parseWarnings(c.warnings).map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
       ${c.error ? `<div class="capture-error">${esc(c.error)}</div>` : ''}
@@ -429,11 +434,13 @@ ul{list-style:none;margin:0;padding:0}
 .item{padding:.7rem 1rem;border-bottom:1px solid var(--border)}
 .item-title a{font-weight:600;color:var(--fg);text-decoration:none}
 .item-title a:hover{color:var(--accent)}
-.item-meta{font-size:.78rem;color:var(--muted);margin-top:.2rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
-.item-meta a{color:var(--muted);text-decoration:none}
-.item-meta a:hover{color:var(--accent)}
+.item-meta{font-size:.78rem;color:var(--muted);margin-top:.35rem;display:flex;gap:.6rem 1rem;flex-wrap:wrap;align-items:center;justify-content:space-between}
+.item-facts,.item-actions{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}.item-actions{margin-left:auto;justify-content:flex-end}
+.item-meta a{color:var(--muted);text-decoration:none}.item-meta a:hover{color:var(--accent)}
 .domain{font-weight:500}
-.item-title .view-link,.item-meta a.export-link{color:var(--accent);background:var(--surface)}.export-link,.view-link{font-size:.72rem;padding:.14rem .38rem;border:1px solid var(--border);border-radius:3px}.recapture,.delete{font-size:.72rem;padding:.14rem .4rem;background:var(--surface);color:var(--fg);border:1px solid var(--border)}.delete{color:var(--danger)}
+.item-actions>a,.item-actions>button{display:inline-flex;align-items:center;justify-content:center;height:2rem;min-height:2rem;margin:0;padding:0 .6rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--fg);font:600 .75rem/1 var(--font);text-decoration:none;white-space:nowrap;box-shadow:0 1px 0 rgba(31,35,40,.04)}.item-actions>a:hover,.item-actions>button:hover{border-color:var(--muted);background:var(--bg);color:var(--fg)}
+.item-actions .source-link,.item-actions .recapture{width:2rem;padding:0;font-size:.9rem}.item-actions .export-link{min-width:3.2rem}.item-actions .view-link{min-width:5.2rem}.item-actions .delete{min-width:4.2rem;color:var(--danger)}.item-actions .delete:hover{border-color:var(--danger);background:var(--bg);color:var(--danger)}
+@media(max-width:600px){.item-facts{width:100%}.item-actions{width:100%;justify-content:flex-end}.item-actions>a,.item-actions>button{height:2.75rem;min-height:2.75rem}.item-actions .source-link,.item-actions .recapture{width:2.75rem}}
 .item-excerpt{font-size:.82rem;color:var(--muted);margin-top:.3rem;line-height:1.4}.capture-warnings,.capture-error{font-size:.78rem;color:#9a6700;margin-top:.3rem}.capture-warnings ul{list-style:disc;padding-left:1.2rem}.capture-error{color:#b42318}
 .pagination{padding:.8rem 1rem;display:flex;gap:1rem;font-size:.9rem}
 .pagination a{color:var(--accent)}
