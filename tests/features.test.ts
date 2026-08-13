@@ -111,6 +111,20 @@ describe('Markdown reading mode', () => {
     expect(renderMarkdownHtml(result!.markdown, false)).toContain('<a href="https://lighthousenewsletter.com/about"');
   });
 
+  test('renders generated pipe tables as responsive semantic HTML', () => {
+    const markdown = '| Model | Average | Notes |\n| --- | ---: | --- |\n| Alpha | 42 | A \\| B |\n| Beta | 7 | Safe |';
+    const rendered = renderMarkdownHtml(markdown, false);
+    expect(rendered).toContain('<div class="table-scroll"><table>');
+    expect(rendered).toContain('<th>Model</th>');
+    expect(rendered).toContain('<td>A | B</td>');
+    expect(rendered.match(/<tr>/g)).toHaveLength(3);
+    expect(rendered).not.toContain('<p>|');
+  });
+
+  test('does not treat ordinary pipe-prefixed text as a table', () => {
+    expect(renderMarkdownHtml('| not a table |', false)).toContain('<p>| not a table |</p>');
+  });
+
   test('renders angle-bracketed links and images whose URLs contain parentheses', () => {
     const image = 'https://images.example.com/diagram_(final).png';
     const page = 'https://example.com/read_(this)';

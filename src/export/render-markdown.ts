@@ -7,7 +7,8 @@ export function renderMarkdownHtml(markdown: string, remoteImages: boolean): str
   let list: 'ul' | 'ol' | null = null;
 
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     if (line.startsWith('```')) {
       closeList();
       if (inCode) out.push('</code></pre>'); else out.push('<pre><code>');
@@ -16,6 +17,23 @@ export function renderMarkdownHtml(markdown: string, remoteImages: boolean): str
     }
     if (inCode) { out.push(line + '\n'); continue; }
     if (!line.trim()) { closeList(); continue; }
+
+    if (isTableRow(line) && isTableSeparator(lines[index + 1] ?? '')) {
+      closeList();
+      const header = parseTableRow(line);
+      index += 2; // consume header, separator, then zero or more body rows
+      const rows: string[][] = [];
+      while (index < lines.length && isTableRow(lines[index])) {
+        rows.push(parseTableRow(lines[index]));
+        index++;
+      }
+      index--;
+      const width = Math.max(header.length, ...rows.map((row) => row.length));
+      const cells = (row: string[]) => Array.from({ length: width }, (_, cell) => row[cell] ?? '');
+      out.push('<div class="table-scroll"><table><thead><tr>' + cells(header).map((cell) => `<th>${inline(cell, remoteImages)}</th>`).join('') + '</tr></thead><tbody>' + rows.map((row) => '<tr>' + cells(row).map((cell) => `<td>${inline(cell, remoteImages)}</td>`).join('') + '</tr>').join('') + '</tbody></table></div>');
+      continue;
+    }
+
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) { closeList(); const n = heading[1].length; out.push(`<h${n}>${inline(heading[2], remoteImages)}</h${n}>`); continue; }
     const unordered = line.match(/^[-*]\s+(.*)$/);
@@ -29,6 +47,39 @@ export function renderMarkdownHtml(markdown: string, remoteImages: boolean): str
   closeList();
   if (inCode) out.push('</code></pre>');
   return out.join('\n');
+}
+
+function isTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+function isTableSeparator(line: string): boolean {
+  if (!isTableRow(line)) return false;
+  const cells = parseTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function parseTableRow(line: string): string[] {
+  const body = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells: string[] = [];
+  let current = '';
+  let escaped = false;
+  for (const char of body) {
+    if (escaped) {
+      current += char === '|' ? '|' : `\\${char}`;
+      escaped = false;
+    } else if (char === '\\') {
+      escaped = true;
+    } else if (char === '|') {
+      cells.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  if (escaped) current += '\\';
+  cells.push(current.trim());
+  return cells;
 }
 
 function inline(text: string, remoteImages: boolean): string {

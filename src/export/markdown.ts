@@ -229,7 +229,7 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
   function convertTable(table: any): string {
     const rows: string[][] = [];
     table.querySelectorAll?.('tr').forEach((tr: any) => {
-      const cells = [...tr.querySelectorAll?.('td,th') ?? []].map((td: any) => td.textContent?.trim() ?? '');
+      const cells = [...tr.querySelectorAll?.('td,th') ?? []].map((td: any) => escapeMarkdownTableCell(td.textContent?.trim() ?? ''));
       rows.push(cells);
     });
     if (rows.length === 0) return '';
@@ -248,6 +248,10 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
     .trim();
 
   return { markdown, assets };
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replace(/\s*\n\s*/g, '<br>').replace(/\|/g, '\\|');
 }
 
 function escapeMarkdownText(value: string): string {

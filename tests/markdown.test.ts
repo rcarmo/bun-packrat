@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { openDatabase, runMigrations, getOrCreateUrl, insertCapture } from '../src/db/index.js';
-import { exportMarkdownZip } from '../src/export/markdown.js';
+import { exportMarkdownZip, htmlToMarkdown } from '../src/export/markdown.js';
 import type { Database } from 'bun:sqlite';
 
 let db: Database;
@@ -60,6 +60,14 @@ beforeEach(() => {
   runMigrations(db);
 });
 afterEach(() => db.close());
+
+describe('Markdown table generation', () => {
+  test('escapes literal pipes and flattens cell line breaks', () => {
+    const result = htmlToMarkdown('<html><body><table><tr><th>Name</th><th>Notes</th></tr><tr><td>A | B</td><td>First<br>Second</td></tr></table></body></html>');
+    expect(result.markdown).toContain('| A \\| B | FirstSecond |');
+    expect(result.markdown).toContain('| --- | --- |');
+  });
+});
 
 describe('exportMarkdownZip', () => {
   test('returns null for non-existent capture', async () => {
