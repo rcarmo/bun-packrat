@@ -404,17 +404,17 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Packrat Archive</title>
 <style>
-:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--border:#ddd;--accent:#0057b7;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--fg:#e8e8e8;--muted:#aaa;--border:#444;--accent:#5da9ff}}
+:root{color-scheme:light;--bg:#fff;--surface:#f6f7f9;--fg:#171717;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--accent-fg:#fff;--success:#176b40;--success-fg:#fff;--danger:#a31616;--focus:#006fe6;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#232527;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--accent-fg:#071b2e;--success:#6fd69c;--success-fg:#092417;--danger:#ffb4ab;--focus:#9acbff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);line-height:1.5}
 header{border-bottom:1px solid var(--border);padding:.8rem 1rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
 header h1{margin:0;font-size:1.2rem;white-space:nowrap}
 form{display:flex;gap:.4rem;flex:1;min-width:200px}
-input[type=search]{flex:1;padding:.4rem .6rem;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.95rem}select{padding:.4rem;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg)}
-button{padding:.4rem .8rem;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer}
+input[type=search],input[type=url],input[type=date],select{padding:.4rem .6rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--fg);font:inherit;font-size:.95rem}input[type=search]{flex:1}input::placeholder{color:var(--muted);opacity:1}
+button{-webkit-appearance:none;appearance:none;padding:.4rem .8rem;background:var(--accent);color:var(--accent-fg);-webkit-text-fill-color:currentColor;border:1px solid transparent;border-radius:4px;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.55;cursor:wait}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .capture-form{border-bottom:1px solid var(--border);padding:.5rem 1rem;display:flex;gap:.4rem;flex-wrap:wrap}
-.capture-form input{flex:1;min-width:200px;padding:.35rem .6rem;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.9rem}
-.capture-form button{background:#2a7d4f;font-size:.85rem}
+.capture-form input{flex:1;min-width:200px;font-size:.9rem}
+.capture-form button{background:var(--success);color:var(--success-fg);font-size:.85rem}
 .count{color:var(--muted);font-size:.82rem;padding:.3rem 1rem;border-bottom:1px solid var(--border)}
 .tag-cloud{padding:.4rem 1rem .3rem;display:flex;flex-wrap:wrap;gap:.3rem;border-bottom:1px solid var(--border)}
 .tag{font-size:.78rem;padding:.15rem .4rem;border-radius:12px;background:var(--border);color:var(--fg);text-decoration:none;display:inline-flex;gap:.3em;align-items:center}
@@ -428,7 +428,7 @@ ul{list-style:none;margin:0;padding:0}
 .item-meta a{color:var(--muted);text-decoration:none}
 .item-meta a:hover{color:var(--accent)}
 .domain{font-weight:500}
-.export-link,.view-link{font-size:.72rem;padding:.1rem .3rem;border:1px solid var(--border);border-radius:3px}.recapture,.delete{font-size:.72rem;padding:.1rem .35rem;background:transparent;color:var(--muted);border:1px solid var(--border)}.delete{color:#b42318}
+.item-title .view-link,.item-meta a.export-link{color:var(--accent);background:var(--surface)}.export-link,.view-link{font-size:.72rem;padding:.14rem .38rem;border:1px solid var(--border);border-radius:3px}.recapture,.delete{font-size:.72rem;padding:.14rem .4rem;background:var(--surface);color:var(--fg);border:1px solid var(--border)}.delete{color:var(--danger)}
 .item-excerpt{font-size:.82rem;color:var(--muted);margin-top:.3rem;line-height:1.4}.capture-warnings,.capture-error{font-size:.78rem;color:#9a6700;margin-top:.3rem}.capture-warnings ul{list-style:disc;padding-left:1.2rem}.capture-error{color:#b42318}
 .pagination{padding:.8rem 1rem;display:flex;gap:1rem;font-size:.9rem}
 .pagination a{color:var(--accent)}
@@ -575,7 +575,7 @@ function captureQueryOptions(url: URL, limit: number, offset: number) {
 function renderMarkdownView(id: number, title: string, markdown: string, remoteImages: boolean): Response {
   const content = renderMarkdownHtml(markdown, remoteImages);
   const enableHref = `/captures/${id}/markdown?remote=1`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>body{max-width:760px;margin:auto;padding:1rem;font:17px/1.6 Georgia,serif;color:#222}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:#fff4ce;border:1px solid #e0b000}img{max-width:100%;height:auto}pre{overflow:auto;background:#f4f4f4;padding:1rem}code{background:#f4f4f4}.image-placeholder{display:block;padding:1rem;background:#eee;color:#555}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a></nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:var(--notice-bg);color:var(--notice-fg);border:1px solid var(--notice-border);border-radius:4px}.warning a{color:inherit;font-weight:700}img{max-width:100%;height:auto}pre{overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a></nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
   return new Response(html, { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Content-Security-Policy': remoteImages ? "default-src 'none'; style-src 'unsafe-inline'; img-src https: http:; base-uri 'none'; frame-ancestors 'none'" : "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; frame-ancestors 'none'",

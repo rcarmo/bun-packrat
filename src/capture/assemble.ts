@@ -31,6 +31,7 @@ export interface AssembleOptions {
 
 const ARCHIVE_STYLES = `
 :root {
+  color-scheme: light;
   --bg: #fff;
   --fg: #1a1a1a;
   --muted: #555;
@@ -44,6 +45,7 @@ const ARCHIVE_STYLES = `
 }
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
     --bg: #1a1a1a;
     --fg: #e8e8e8;
     --muted: #aaa;
