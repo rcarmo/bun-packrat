@@ -162,7 +162,7 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
         const href = node.getAttribute('href') ?? '';
         const text = inner().trim();
         if (!text) return '';
-        if (href && !href.startsWith('#')) return `[${text}](<${escapeMarkdownDestination(href)}>)`;
+        if (href && !href.startsWith('#')) return `[${text}](${formatMarkdownDestination(href)})`;
         return text;
       }
       case 'img': {
@@ -174,7 +174,7 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
           const remoteAlt = escapeMarkdownText(remote?.alt ?? alt);
           if (!remote?.originalUrl) return remoteAlt ? `*[Image: ${remoteAlt}]*` : '';
           const remoteTitle = remote.title ? ` "${remote.title.replace(/"/g, '\\"')}"` : '';
-          return `![${remoteAlt}](<${escapeMarkdownDestination(remote.originalUrl)}>${remoteTitle})`;
+          return `![${remoteAlt}](${formatMarkdownDestination(remote.originalUrl)}${remoteTitle})`;
         }
         if (src.startsWith('data:')) {
           // Extract data: URL asset
@@ -185,10 +185,10 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
             const name = `img-${assetIndex++}.${ext}`;
             const bytes = Buffer.from(match[2], 'base64');
             assets.push({ name, data: new Uint8Array(bytes) });
-            return `![${escapeMarkdownText(alt)}](<assets/${name}>${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+            return `![${escapeMarkdownText(alt)}](assets/${name}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
           }
         }
-        if (src) return `![${escapeMarkdownText(alt)}](<${escapeMarkdownDestination(src)}>${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+        if (src) return `![${escapeMarkdownText(alt)}](${formatMarkdownDestination(src)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
         return '';
       }
       case 'ul': {
@@ -254,8 +254,11 @@ function escapeMarkdownText(value: string): string {
   return value.replace(/([\\\[\]*_`])/g, '\\$1');
 }
 
-function escapeMarkdownDestination(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/>/g, '\\>');
+function formatMarkdownDestination(value: string): string {
+  // Keep ordinary URLs readable in raw Markdown. Angle-bracket destinations
+  // are only needed when Markdown delimiters could otherwise be ambiguous.
+  if (!/[()\s<>]/.test(value)) return value;
+  return `<${value.replace(/\\/g, '\\\\').replace(/>/g, '\\>')}>`;
 }
 
 function mimeToExt(mime: string): string {

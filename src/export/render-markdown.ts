@@ -33,11 +33,15 @@ export function renderMarkdownHtml(markdown: string, remoteImages: boolean): str
 
 function inline(text: string, remoteImages: boolean): string {
   let value = text;
-  value = value.replace(/!\[([^\]]*)\]\(&lt;(https?:\/\/.*?)&gt;(?:\s+&quot;((?:(?!&quot;).)*)&quot;)?\)/g,
-    (_m, alt, url, title) => remoteImages
-      ? `<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ''} loading="lazy" referrerpolicy="no-referrer">`
-      : `<span class="image-placeholder">[Image: ${alt || new URL(decodeHtmlEntities(url)).hostname}]</span>`);
-  value = value.replace(/\[([^\]]+)\]\(&lt;(https?:\/\/.*?)&gt;\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
+  value = value.replace(/!\[([^\]]*)\]\((?:&lt;(https?:\/\/.*?)&gt;|(https?:\/\/[^\s)]+))(?:\s+&quot;((?:(?!&quot;).)*)&quot;)?\)/g,
+    (_m, alt, bracketedUrl, plainUrl, title) => {
+      const url = bracketedUrl || plainUrl;
+      return remoteImages
+        ? `<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ''} loading="lazy" referrerpolicy="no-referrer">`
+        : `<span class="image-placeholder">[Image: ${alt || new URL(decodeHtmlEntities(url)).hostname}]</span>`;
+    });
+  value = value.replace(/\[([^\]]+)\]\((?:&lt;(https?:\/\/.*?)&gt;|(https?:\/\/[^)]+))\)/g,
+    (_m, text, bracketedUrl, plainUrl) => `<a href="${bracketedUrl || plainUrl}" rel="noopener noreferrer">${text}</a>`);
   value = value.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   value = value.replace(/(?<!\*)\*([^*]+)\*/g, '<em>$1</em>');
   value = value.replace(/`([^`]+)`/g, '<code>$1</code>');

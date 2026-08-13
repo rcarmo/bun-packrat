@@ -87,12 +87,21 @@ describe('Markdown reading mode', () => {
     setCaptureImageSources(db, capture.id, [{ order:0, originalUrl:'https://images.example.com/diagram.png', alt:'Diagram', title:'Architecture', width:null, height:null }]);
     db.exec("UPDATE captures SET html=? WHERE id=?", [Buffer.from('<html><body><header class=\"packrat-header\">Archive metadata must not leak</header><div class=\"packrat-content\"><h1>Markdown</h1><p>Body text</p><img src=\"data:image/png;base64,AA==\" alt=\"Diagram\"></div></body></html>'), capture.id]);
     const result = await renderRemoteMarkdown(db, capture.id);
-    expect(result?.markdown).toContain('![Diagram](<https://images.example.com/diagram.png> "Architecture")');
+    expect(result?.markdown).toContain('![Diagram](https://images.example.com/diagram.png "Architecture")');
     expect(result?.markdown).not.toContain('Archive metadata must not leak');
     expect(result?.markdown).not.toContain('data:image');
     expect(renderMarkdownHtml(result!.markdown, false)).toContain('image-placeholder');
     expect(renderMarkdownHtml(result!.markdown, false)).not.toContain('<img');
     expect(renderMarkdownHtml(result!.markdown, true)).toContain('<img src="https://images.example.com/diagram.png"');
+  });
+
+  test('keeps ordinary raw Markdown links readable', async () => {
+    const capture = add('https://example.com/link', 'Links');
+    db.exec('UPDATE captures SET html=? WHERE id=?', [Buffer.from('<html><body><div class="packrat-content"><p>Hello, <a href="https://lighthousenewsletter.com/about">Rafael</a> here.</p></div></body></html>'), capture.id]);
+    const result = await renderRemoteMarkdown(db, capture.id);
+    expect(result?.markdown).toContain('[Rafael](https://lighthousenewsletter.com/about)');
+    expect(result?.markdown).not.toContain('[Rafael](<');
+    expect(renderMarkdownHtml(result!.markdown, false)).toContain('<a href="https://lighthousenewsletter.com/about"');
   });
 
   test('renders angle-bracketed links and images whose URLs contain parentheses', () => {
