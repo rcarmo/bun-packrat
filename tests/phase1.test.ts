@@ -6,13 +6,14 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { openDatabase, runMigrations, getCaptureById, searchCaptures } from '../src/db/index.js';
-import { extractContent } from '../src/capture/extract.js';
+import { extractContent, recoverSemanticArticleImages } from '../src/capture/extract.js';
 import { sanitizeHtml } from '../src/capture/sanitize.js';
 import { assembleHtml } from '../src/capture/assemble.js';
 import { normaliseUrl } from '../src/capture/url.js';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { getOrCreateUrl, insertCapture } from '../src/db/index.js';
+import { formatImageRecoveryWarning } from '../src/capture/pipeline.js';
 
 let db: Database;
 
@@ -66,6 +67,39 @@ describe('Phase 1 pipeline proof', () => {
     expect(result.mode === 'article' || result.mode === 'full_page').toBe(true);
     expect(result.title).toBeTruthy();
     expect(result.extractedText).toBeTruthy();
+  });
+
+  test('recovers images from a text-matched semantic article when Readability omits them', () => {
+    const paragraphs = Array.from({ length: 8 }, (_, i) => `<p>Paragraph ${i} contains substantial renewable energy reporting and technical context for readers.</p>`).join('');
+    const raw = `<html><body><nav>Navigation chrome</nav><main><article id="story">${paragraphs}<figure><img src="https://images.example.com/a.jpg" alt="A"></figure><figure><img src="https://images.example.com/b.jpg" alt="B"></figure></article></main></body></html>`;
+    const readabilityText = Array.from({ length: 8 }, (_, i) => `Paragraph ${i} contains substantial renewable energy reporting and technical context for readers.`).join(' ');
+    const recovered = recoverSemanticArticleImages(raw, `<div>${paragraphs}</div>`, readabilityText);
+    expect(recovered.imageRecovery).toEqual({ readabilityImages: 0, recoveredImages: 2 });
+    expect(recovered.articleHtml).toContain('id="story"');
+    expect(recovered.articleHtml?.match(/<img\b/g)).toHaveLength(2);
+  });
+
+  test('prefers a matching nested article over an ancestor main with unrelated images', () => {
+    const paragraphs = '<p>Substantial reporting about energy systems and storage capacity for technical readers.</p>'.repeat(8);
+    const raw = `<main><img src="chrome-a.jpg"><img src="chrome-b.jpg"><article id="story">${paragraphs}<img src="article-a.jpg"><img src="article-b.jpg"></article><img src="teaser.jpg"></main>`;
+    const recovered = recoverSemanticArticleImages(raw, `<div>${paragraphs}</div>`, paragraphs.replace(/<[^>]+>/g, ' '));
+    expect(recovered.imageRecovery).toEqual({ readabilityImages:0, recoveredImages:2 });
+    expect(recovered.articleHtml).toContain('id="story"');
+    expect(recovered.articleHtml).not.toContain('chrome-a.jpg');
+    expect(recovered.articleHtml).not.toContain('teaser.jpg');
+  });
+
+  test('does not replace Readability output with a textually unrelated image container', () => {
+    const article = `<article>${'<p>Carefully extracted reporting about energy systems and storage capacity.</p>'.repeat(8)}</article>`;
+    const gallery = `<main>${'<p>Product cards and unrelated navigation labels.</p>'.repeat(8)}<img src="a.jpg"><img src="b.jpg"></main>`;
+    const recovered = recoverSemanticArticleImages(`<html><body>${article}${gallery}</body></html>`, article, article.replace(/<[^>]+>/g, ' '));
+    expect(recovered.imageRecovery).toBeNull();
+    expect(recovered.articleHtml).toBe(article);
+  });
+
+  test('image recovery warning reports images retained after sanitisation', () => {
+    const warning = formatImageRecoveryWarning(0, '<article><img src="data:image/png;base64,AA=="><p>Body</p><img src="data:image/png;base64,AA=="></article>');
+    expect(warning).toBe('Readability omitted article images; recovered semantic article container (0 → 2 images retained)');
   });
 
   test('sanitizeHtml removes scripts, iframes, forms', () => {

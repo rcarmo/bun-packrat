@@ -196,6 +196,9 @@ export async function capturePage(
     // 9. Sanitise
     const { html: sanitisedHtml, warnings: sanitiseWarnings } = sanitizeHtml(htmlWithAssets);
     warnings.push(...sanitiseWarnings);
+    if (extracted.imageRecovery) {
+      warnings.push(formatImageRecoveryWarning(extracted.imageRecovery.readabilityImages, sanitisedHtml));
+    }
 
     // 10. Assemble final document. Embed a reproducible hash of the sanitised
     // body; the database content_hash below covers the complete document.
@@ -350,6 +353,11 @@ async function scrollPage(page: any): Promise<void> {
 }
 
 /** Find the chromium executable in the browsers path */
+export function formatImageRecoveryWarning(readabilityImages: number, sanitisedHtml: string): string {
+  const finalImages = (sanitisedHtml.match(/<img\b/gi) ?? []).length;
+  return `Readability omitted article images; recovered semantic article container (${readabilityImages} → ${finalImages} images retained)`;
+}
+
 export function findChromiumExecutable(browsersPath: string): string | undefined {
   // Playwright browser path convention: <browsersPath>/chromium-*/chrome-linux64/chrome
   try {

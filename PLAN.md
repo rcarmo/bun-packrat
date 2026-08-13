@@ -2,7 +2,7 @@
 
 Project path: `/workspace/projects/bun-packrat`  
 PRD: `docs/PRD.md`  
-Status: **All actionable non-ArchiveBox scope complete — 100 tests passing across 11 files; Phases 3 and 5 deferred**
+Status: **All actionable non-ArchiveBox scope complete — 104 tests passing across 11 files; Phases 3 and 5 deferred**
 
 ---
 

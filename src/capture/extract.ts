@@ -21,6 +21,8 @@ export interface ExtractResult {
   extractedText: string | null;
   /** The article body HTML, or null if full-page mode */
   articleHtml: string | null;
+  /** Set when a text-matched semantic container restores images Readability omitted. */
+  imageRecovery: { readabilityImages: number; recoveredImages: number } | null;
 }
 
 /** Minimum text length for a Readability result to be considered useful */
@@ -84,7 +86,7 @@ export function extractContent(rawHtml: string, url: string): ExtractResult {
       excerpt: article.excerpt ?? null,
       lang: article.lang ?? htmlLang,
       extractedText: article.textContent?.trim() ?? null,
-      articleHtml: article.content ?? null,
+      ...recoverSemanticArticleImages(rawHtml, article.content ?? '', article.textContent ?? ''),
     };
   }
 
@@ -106,5 +108,73 @@ export function extractContent(rawHtml: string, url: string): ExtractResult {
     lang: htmlLang,
     extractedText: pageText ? pageText.slice(0, 50_000) : null,
     articleHtml: null,
+    imageRecovery: null,
   };
+}
+
+/** Readability occasionally removes image-heavy figures while retaining the
+ * complete article text. In that case, recover the original semantic article
+ * container only when its text strongly matches the Readability result. */
+export function recoverSemanticArticleImages(
+  rawHtml: string,
+  readabilityHtml: string,
+  readabilityText: string,
+): Pick<ExtractResult, 'articleHtml' | 'imageRecovery'> {
+  const readabilityImages = countImages(readabilityHtml);
+  const targetText = normaliseText(readabilityText);
+  if (targetText.length < MIN_ARTICLE_TEXT_LENGTH) {
+    return { articleHtml: readabilityHtml, imageRecovery: null };
+  }
+
+  const { document } = parseHTML(rawHtml);
+  const allCandidates = Array.from(document.querySelectorAll('article, main'))
+    .map((element) => {
+      const text = normaliseText(element.textContent ?? '');
+      const images = element.querySelectorAll('img').length;
+      const ratio = text.length / targetText.length;
+      const coverage = wordCoverage(targetText, text);
+      const semanticBonus = element.tagName.toLowerCase() === 'article' ? 0.05 : 0;
+      return { element, text, images, ratio, coverage, score: coverage - Math.abs(1 - ratio) + semanticBonus };
+    });
+  const textMatches = (candidate: typeof allCandidates[number]) =>
+    candidate.ratio >= 0.8 && candidate.ratio <= 1.25 && candidate.coverage >= 0.9;
+  const candidates = allCandidates
+    .filter((candidate) => {
+      if (!textMatches(candidate)) return false;
+      if (candidate.images < Math.max(readabilityImages + 2, Math.ceil(readabilityImages * 1.5))) return false;
+      if (candidate.element.tagName.toLowerCase() === 'main') {
+        const matchingNestedArticle = allCandidates.some((nested) =>
+          nested.element.tagName.toLowerCase() === 'article' &&
+          candidate.element.contains(nested.element) && textMatches(nested),
+        );
+        if (matchingNestedArticle) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const best = candidates[0];
+  if (!best) return { articleHtml: readabilityHtml, imageRecovery: null };
+  return {
+    articleHtml: best.element.outerHTML,
+    imageRecovery: { readabilityImages, recoveredImages: best.images },
+  };
+}
+
+function countImages(html: string): number {
+  const { document } = parseHTML(html);
+  return document.querySelectorAll('img').length;
+}
+
+function normaliseText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function wordCoverage(target: string, candidate: string): number {
+  const targetWords = new Set(target.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  if (targetWords.size === 0) return 0;
+  const candidateWords = new Set(candidate.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  let matched = 0;
+  for (const word of targetWords) if (candidateWords.has(word)) matched++;
+  return matched / targetWords.size;
 }
