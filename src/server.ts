@@ -17,6 +17,7 @@ import { exportHtml, slugify } from './export/html.js';
 import { exportMarkdownZip, renderRemoteMarkdown } from './export/markdown.js';
 import { renderMarkdownHtml } from './export/render-markdown.js';
 import { resolveCaptureIndexPage } from './index-page.js';
+import { INDEX_CLIENT_SCRIPT } from './index-client.js';
 import { exportEpub } from './export/epub.js';
 import { exportPdf } from './export/pdf.js';
 import { loadConfig } from './config.js';
@@ -364,7 +365,9 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
       ).join('')}</div>`
     : '';
 
-  const items = rows.map((c) => `
+  const items = rows.map((c) => {
+    const sourceHref = safeExternalHref(c.source_url);
+    return `
     <li class="item">
       <div class="item-title"><a href="/captures/${c.id}">${esc(c.title ?? '(no title)')}</a></div>
       <div class="item-meta">
@@ -376,7 +379,7 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
         </div>
         <div class="item-actions" role="group" aria-label="Actions for ${esc(c.title ?? 'capture')}">
           <a class="view-link" href="/captures/${c.id}/markdown">Markdown</a>
-          <a class="source-link" href="${esc(c.source_url)}" rel="noopener" target="_blank" title="Open original page" aria-label="Open original page">↗</a>
+          ${sourceHref ? `<a class="source-link" href="${esc(sourceHref)}" rel="noopener" target="_blank" title="Open original page" aria-label="Open original page">↗</a>` : ''}
           <a class="export-link" href="/captures/${c.id}/export/html" title="Download HTML">⬇ HTML</a>
           <a class="export-link" href="/captures/${c.id}/export/md"   title="Download Markdown ZIP">MD</a>
           <a class="export-link" href="/captures/${c.id}/export/epub" title="Download EPUB">EPUB</a>
@@ -388,7 +391,8 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
       ${c.warnings ? `<details class="capture-warnings"><summary>Capture warnings</summary><ul>${parseWarnings(c.warnings).map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
       ${c.error ? `<div class="capture-error">${esc(c.error)}</div>` : ''}
       ${c.excerpt ? `<div class="item-excerpt">${esc(c.excerpt.slice(0, 200))}</div>` : ''}
-    </li>`).join('');
+    </li>`;
+  }).join('');
 
   const queryBase = new URLSearchParams(url.searchParams);
   queryBase.delete('offset');
@@ -409,101 +413,68 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Packrat Archive</title>
 <style>
-:root{color-scheme:light;--bg:#fff;--surface:#f6f7f9;--fg:#171717;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--accent-fg:#fff;--success:#176b40;--success-fg:#fff;--danger:#a31616;--focus:#006fe6;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#232527;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--accent-fg:#071b2e;--success:#6fd69c;--success-fg:#092417;--danger:#ffb4ab;--focus:#9acbff}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);line-height:1.5}
-header{border-bottom:1px solid var(--border);padding:.8rem 1rem}
-header h1{margin:0 0 .65rem;font-size:1.2rem}
-header form{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:.5rem;width:100%;min-width:0}
-header form [name=q]{grid-column:span 3}header form [name=title]{grid-column:span 2}header form [name=url]{grid-column:span 3}header form [name=dateFrom],header form [name=dateTo]{grid-column:span 2}
-header form [name=status],header form [name=mode]{grid-column:span 3}header form [name=sort],header form [name=limit],header form button{grid-column:span 2}
-input[type=search],input[type=url],input[type=date],select{width:100%;min-width:0;min-height:2.75rem;padding:.55rem .65rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--fg);font:inherit;font-size:.95rem}input::placeholder{color:var(--muted);opacity:1}
-button{-webkit-appearance:none;appearance:none;min-height:2.75rem;padding:.5rem .8rem;background:var(--accent);color:var(--accent-fg);-webkit-text-fill-color:currentColor;border:1px solid transparent;border-radius:4px;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.55;cursor:wait}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
-.capture-form{border-bottom:1px solid var(--border);padding:.65rem 1rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.5rem;align-items:center}
-.capture-form input{min-width:0;font-size:.9rem}
-.capture-form button{background:var(--success);color:var(--success-fg);font-size:.85rem}
-@media(max-width:800px){header form{grid-template-columns:repeat(4,minmax(0,1fr))}header form [name=q]{grid-column:1/-1}header form [name=title],header form [name=url],header form [name=dateFrom],header form [name=dateTo],header form [name=status],header form [name=mode]{grid-column:span 2}header form [name=sort],header form [name=limit]{grid-column:span 1}header form button{grid-column:span 2}}
-@media(max-width:600px){header form{grid-template-columns:repeat(2,minmax(0,1fr))}header form [name=q],header form [name=title],header form [name=url],header form button{grid-column:1/-1}header form [name=dateFrom],header form [name=dateTo],header form [name=status],header form [name=mode],header form [name=sort],header form [name=limit]{grid-column:span 1}}
-@media(max-width:480px){header form{grid-template-columns:minmax(0,1fr)}header form>*{grid-column:1!important}.capture-form{grid-template-columns:minmax(0,1fr)}.capture-form button{width:100%}}
-.count{color:var(--muted);font-size:.82rem;padding:.3rem 1rem;border-bottom:1px solid var(--border)}
-.tag-cloud{padding:.4rem 1rem .3rem;display:flex;flex-wrap:wrap;gap:.3rem;border-bottom:1px solid var(--border)}
-.tag{font-size:.78rem;padding:.15rem .4rem;border-radius:12px;background:var(--border);color:var(--fg);text-decoration:none;display:inline-flex;gap:.3em;align-items:center}
-.tag.active{background:var(--accent);color:#fff}
-.tag span{opacity:.7;font-size:.9em}
-ul{list-style:none;margin:0;padding:0}
-.item{padding:.7rem 1rem;border-bottom:1px solid var(--border)}
-.item-title a{font-weight:600;color:var(--fg);text-decoration:none}
-.item-title a:hover{color:var(--accent)}
-.item-meta{font-size:.78rem;color:var(--muted);margin-top:.35rem;display:flex;gap:.6rem 1rem;flex-wrap:wrap;align-items:center;justify-content:space-between}
-.item-facts,.item-actions{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}.item-actions{margin-left:auto;justify-content:flex-end}
-.item-meta a{color:var(--muted);text-decoration:none}.item-meta a:hover{color:var(--accent)}
-.domain{font-weight:500}
-.item-actions>a,.item-actions>button{display:inline-flex;align-items:center;justify-content:center;height:2rem;min-height:2rem;margin:0;padding:0 .6rem;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--fg);font:600 .75rem/1 var(--font);text-decoration:none;white-space:nowrap;box-shadow:0 1px 0 rgba(31,35,40,.04)}.item-actions>a:hover,.item-actions>button:hover{border-color:var(--muted);background:var(--bg);color:var(--fg)}
-.item-actions .source-link,.item-actions .recapture{width:2rem;padding:0;font-size:.9rem}.item-actions .export-link{min-width:3.2rem}.item-actions .view-link{min-width:5.2rem}.item-actions .delete{min-width:4.2rem;color:var(--danger)}.item-actions .delete:hover{border-color:var(--danger);background:var(--bg);color:var(--danger)}
-@media(max-width:600px){.item-facts{width:100%}.item-actions{width:100%;justify-content:flex-end}.item-actions>a,.item-actions>button{height:2.75rem;min-height:2.75rem}.item-actions .source-link,.item-actions .recapture{width:2.75rem}}
-.item-excerpt{font-size:.82rem;color:var(--muted);margin-top:.3rem;line-height:1.4}.capture-warnings,.capture-error{font-size:.78rem;color:#9a6700;margin-top:.3rem}.capture-warnings ul{list-style:disc;padding-left:1.2rem}.capture-error{color:#b42318}
-.pagination{padding:.8rem 1rem;display:flex;gap:1rem;font-size:.9rem}
-.pagination a{color:var(--accent)}
+:root{color-scheme:light;--canvas:#f6f8fa;--canvas-default:#fff;--canvas-subtle:#f6f8fa;--fg:#1f2328;--fg-muted:#59636e;--border:#d1d9e0;--border-muted:#d8dee4;--accent:#0969da;--accent-emphasis:#0969da;--accent-fg:#fff;--success:#1f883d;--success-hover:#1a7f37;--danger:#d1242f;--danger-muted:#ffebe9;--header:#25292e;--header-fg:#fff;--focus:#0969da;--shadow:0 1px 0 rgba(31,35,40,.04);--font:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--canvas:#0d1117;--canvas-default:#161b22;--canvas-subtle:#21262d;--fg:#f0f6fc;--fg-muted:#8b949e;--border:#30363d;--border-muted:#21262d;--accent:#58a6ff;--accent-emphasis:#1f6feb;--accent-fg:#fff;--success:#238636;--success-hover:#2ea043;--danger:#f85149;--danger-muted:#3d1214;--header:#010409;--header-fg:#f0f6fc;--focus:#58a6ff;--shadow:0 0 transparent}}
+*{box-sizing:border-box}html{background:var(--canvas)}body{margin:0;background:var(--canvas);color:var(--fg);font:14px/1.5 var(--font)}a{color:var(--accent)}
+.app-header{background:var(--header);color:var(--header-fg);box-shadow:0 1px 0 rgba(255,255,255,.08)}.app-header-inner{max-width:1280px;min-height:64px;margin:auto;padding:0 24px;display:flex;align-items:center;gap:12px}.brand{display:inline-flex;align-items:center;gap:8px;color:var(--header-fg);font-size:16px;font-weight:600;text-decoration:none}.brand svg{fill:currentColor}.app-context{padding-left:12px;border-left:1px solid rgba(255,255,255,.25);color:rgba(255,255,255,.75)}.status-link{margin-left:auto;color:var(--header-fg);font-weight:600;text-decoration:none}.status-link:hover{text-decoration:underline}
+.page{max-width:1280px;margin:0 auto;padding:24px}.page-heading{display:flex;align-items:center;gap:10px;margin-bottom:16px}.page-heading h1{margin:0;font-size:24px;font-weight:400;line-height:1.25}.page-heading p{margin:3px 0 0;color:var(--fg-muted)}.Counter{display:inline-block;min-width:20px;padding:0 6px;border-radius:2em;background:rgba(175,184,193,.2);color:var(--fg);font-size:12px;font-weight:600;line-height:18px;text-align:center}
+.Box{margin-bottom:16px;border:1px solid var(--border);border-radius:6px;background:var(--canvas-default);overflow:hidden}.Box-header{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--canvas-subtle)}.Box-title{margin:0;font-size:14px;font-weight:600}.Box-body{padding:16px}
+input[type=search],input[type=url],input[type=date],select{width:100%;min-width:0;height:32px;padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:var(--canvas-default);color:var(--fg);font:inherit;box-shadow:inset 0 1px 0 rgba(208,215,222,.2)}input::placeholder{color:var(--fg-muted);opacity:1}input:focus,select:focus{border-color:var(--focus);outline:2px solid color-mix(in srgb,var(--focus) 30%,transparent);outline-offset:-1px}
+button,.Button{-webkit-appearance:none;appearance:none;display:inline-flex;align-items:center;justify-content:center;height:32px;min-height:32px;padding:0 12px;border:1px solid var(--border);border-radius:6px;background:var(--canvas-subtle);color:var(--fg);font:600 12px/1 var(--font);text-decoration:none;white-space:nowrap;box-shadow:var(--shadow);cursor:pointer}button:hover,.Button:hover{background:var(--canvas-default);border-color:var(--fg-muted)}button:disabled{opacity:.55;cursor:wait}.Button--primary{border-color:rgba(27,31,36,.15);background:var(--success);color:#fff}.Button--primary:hover{background:var(--success-hover);border-color:rgba(27,31,36,.15)}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.capture-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.capture-status{display:none;grid-column:1/-1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--canvas-subtle);color:var(--fg-muted);font-size:13px}.capture-status[data-state]{display:block}.capture-status[data-state=success]{border-color:color-mix(in srgb,var(--success) 55%,var(--border));background:color-mix(in srgb,var(--success) 12%,var(--canvas-default));color:var(--fg)}.capture-status[data-state=error]{border-color:var(--danger);background:var(--danger-muted);color:var(--fg)}.capture-status a{font-weight:600}
+.filter-form{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px 8px;align-items:end}.FormControl{display:flex;min-width:0;flex-direction:column;gap:6px}.FormControl-label{color:var(--fg);font-size:12px;font-weight:600;line-height:1.25}.FormControl--q{grid-column:span 3}.FormControl--title{grid-column:span 2}.FormControl--url{grid-column:span 3}.FormControl--date{grid-column:span 2}.FormControl--status,.FormControl--mode{grid-column:span 3}.FormControl--sort,.FormControl--limit,.filter-submit{grid-column:span 2}.filter-submit{align-self:end}
+.tag-cloud{padding:12px 16px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--border)}.tag{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border:1px solid transparent;border-radius:2em;background:var(--canvas-subtle);color:var(--accent);font-size:12px;font-weight:600;text-decoration:none}.tag:hover{border-color:var(--border)}.tag.active{background:var(--accent-emphasis);color:#fff}.tag span{color:inherit;opacity:.75}
+.results-header{min-height:48px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);background:var(--canvas-subtle)}.results-summary{color:var(--fg-muted)}.results-summary strong{color:var(--fg)}.failed-link{font-size:12px;text-decoration:none}.failed-link:hover{text-decoration:underline}
+ul{list-style:none;margin:0;padding:0}.item{padding:16px;border-bottom:1px solid var(--border-muted)}.item:last-child{border-bottom:0}.item:hover{background:color-mix(in srgb,var(--canvas-subtle) 55%,transparent)}.item-title a{color:var(--accent);font-size:16px;font-weight:600;text-decoration:none}.item-title a:hover{text-decoration:underline}.item-meta{margin-top:8px;display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center;justify-content:space-between;color:var(--fg-muted);font-size:12px}.item-facts,.item-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.item-actions{margin-left:auto;justify-content:flex-end}.item-meta a{color:var(--fg-muted);text-decoration:none}.item-meta a:hover{color:var(--accent)}.domain{font-weight:600}.mode{padding:0 7px;border:1px solid var(--border);border-radius:2em;line-height:20px}
+.item-actions>a,.item-actions>button{height:32px;min-height:32px;margin:0;padding:0 10px}.item-actions .source-link,.item-actions .recapture{width:32px;padding:0;font-size:14px}.item-actions .export-link{min-width:44px}.item-actions .view-link{min-width:72px}.item-actions .delete{color:var(--danger)}.item-actions .delete:hover{border-color:var(--danger);background:var(--danger-muted);color:var(--danger)}
+.item-excerpt{max-width:900px;margin-top:8px;color:var(--fg-muted);font-size:13px}.capture-warnings,.capture-error{margin-top:8px;color:#9a6700;font-size:12px}.capture-warnings ul{list-style:disc;padding-left:20px}.capture-error{color:var(--danger)}.empty-state{padding:40px 16px;color:var(--fg-muted);text-align:center}
+.pagination{padding:8px 0 24px;display:flex;justify-content:center;gap:8px}.pagination a{display:inline-flex;padding:5px 12px;border:1px solid transparent;border-radius:6px;color:var(--accent);font-weight:600;text-decoration:none}.pagination a:hover{border-color:var(--border);background:var(--canvas-default)}
+@media(max-width:800px){.filter-form{grid-template-columns:repeat(4,minmax(0,1fr))}.FormControl--q{grid-column:1/-1}.FormControl--title,.FormControl--url,.FormControl--date,.FormControl--status,.FormControl--mode{grid-column:span 2}.FormControl--sort,.FormControl--limit{grid-column:span 1}.filter-submit{grid-column:span 2}}
+@media(max-width:600px){.app-header-inner{min-height:56px;padding:0 16px}.page{padding:16px}.page-heading h1{font-size:20px}.Box-body{padding:12px}.capture-form{grid-template-columns:minmax(0,1fr)}.capture-form button{width:100%}.filter-form{grid-template-columns:repeat(2,minmax(0,1fr))}.FormControl--q,.FormControl--title,.FormControl--url,.filter-submit{grid-column:1/-1}.FormControl--date,.FormControl--status,.FormControl--mode,.FormControl--sort,.FormControl--limit{grid-column:span 1}input[type=search],input[type=url],input[type=date],select,button,.Button{height:44px;min-height:44px}.item{padding:16px}.item-facts,.item-actions{width:100%}.item-actions{justify-content:flex-end}.item-actions>a,.item-actions>button{height:44px;min-height:44px}.item-actions .source-link,.item-actions .recapture{width:44px}.results-header{align-items:flex-start;flex-direction:column}.app-context{display:none}}
+@media(max-width:400px){.filter-form{grid-template-columns:minmax(0,1fr)}.filter-form>*{grid-column:1!important}.item-actions{gap:5px}.item-actions .view-link{min-width:68px}.item-actions>a,.item-actions>button{padding:0 8px}}
 </style>
 </head>
 <body>
-<header>
-  <h1>📦 Packrat</h1>
-  <form method="GET" action="/">
-    <input type="search" name="q" value="${esc(q)}" placeholder="Full-text search…" autocomplete="off">
-    <input type="search" name="title" value="${esc(url.searchParams.get('title') ?? '')}" placeholder="Title">
-    <input type="search" name="url" value="${esc(url.searchParams.get('url') ?? '')}" placeholder="URL">
-    <input type="date" name="dateFrom" value="${esc(url.searchParams.get('dateFrom') ?? '')}" aria-label="From date">
-    <input type="date" name="dateTo" value="${esc(url.searchParams.get('dateTo') ?? '')}" aria-label="To date">
-    <select name="status"><option value=""${!url.searchParams.get('status') ? ' selected' : ''}>Succeeded</option><option value="all"${url.searchParams.get('status') === 'all' ? ' selected' : ''}>All status</option><option value="failed"${url.searchParams.get('status') === 'failed' ? ' selected' : ''}>Failed</option></select>
-    <select name="mode" aria-label="Capture mode"><option value=""${!mode ? ' selected' : ''}>All modes</option><option value="article"${mode === 'article' ? ' selected' : ''}>Article</option><option value="full_page"${mode === 'full_page' ? ' selected' : ''}>Full page</option><option value="metadata_only"${mode === 'metadata_only' ? ' selected' : ''}>Metadata only</option></select>
-    <select name="sort" aria-label="Sort"><option value="relevance"${sort === 'relevance' ? ' selected' : ''}>Relevance</option><option value="newest"${sort === 'newest' ? ' selected' : ''}>Newest</option><option value="oldest"${sort === 'oldest' ? ' selected' : ''}>Oldest</option></select>
-    <select name="limit" aria-label="Page size"><option${limit === 25 ? ' selected' : ''}>25</option><option${limit === 50 ? ' selected' : ''}>50</option><option${limit === 100 ? ' selected' : ''}>100</option><option${limit === 200 ? ' selected' : ''}>200</option></select>
-    <button type="submit">Search</button>
-  </form>
+<header class="app-header">
+  <div class="app-header-inner">
+    <a class="brand" href="/" aria-label="Packrat home"><svg width="24" height="24" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 1A1.75 1.75 0 0 0 1 2.75v10.5C1 14.216 1.784 15 2.75 15h10.5A1.75 1.75 0 0 0 15 13.25V2.75A1.75 1.75 0 0 0 13.25 1Zm0 1.5h10.5a.25.25 0 0 1 .25.25V5h-11V2.75a.25.25 0 0 1 .25-.25ZM2.5 6.5h11v6.75a.25.25 0 0 1-.25.25H2.75a.25.25 0 0 1-.25-.25Zm3.25 1a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5Z"/></svg><span>Packrat</span></a>
+    <span class="app-context">Web archive</span>
+    <a class="status-link" href="/api/status">Status</a>
+  </div>
 </header>
-<form class="capture-form" id="capture-form">
-  <input type="url" id="capture-url" value="${esc(archive)}" placeholder="Archive a URL…" required>
-  <button type="submit">Archive</button>
-  <span id="capture-status" style="font-size:.82rem;color:var(--muted);padding:.3rem 0"></span>
-</form>
-${tagCloud}
-<p class="count">${matchingCount ? `${offset + 1}–${Math.min(offset + rows.length, matchingCount)} of ` : ''}${matchingCount.toLocaleString()} matching · ${totalCount.toLocaleString()} total · <a href="${filterHref('status', 'failed')}">${failedCount} failed</a>${q ? ` for "${esc(q)}"` : ''}${domain ? ` from ${esc(domain)}` : ''}${tag ? ` tagged ${esc(tag)}` : ''}</p>
-<ul>${searchError ? `<li class="capture-error" style="padding:1rem">${esc(searchError)}</li>` : items || '<li style="padding:1rem;color:var(--muted)">No captures yet.</li>'}</ul>
-${pagination}
-<script>
-document.querySelectorAll('.delete').forEach((button) => button.addEventListener('click', async () => {
-  const impact = JSON.parse(button.dataset.impact || '{}');
-  const message = 'Permanently delete capture #' + button.dataset.id + '?\n\n' + button.dataset.title + '\n' + button.dataset.source + '\n' + button.dataset.time + '\n\nAffected relations: ' + (impact.aliases||0) + ' aliases, ' + (impact.metadata||0) + ' metadata rows, ' + (impact.tags||0) + ' tags. ' + (impact.jobs||0) + ' job records will be retained.';
-  if (!confirm(message)) return;
-  button.disabled = true;
-  const r = await fetch('/api/captures/' + button.dataset.id, {method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:button.dataset.id})});
-  if (r.ok) {
-    const params = new URLSearchParams(location.search);
-    const currentOffset = Number(params.get('offset') || 0);
-    if (document.querySelectorAll('.item').length === 1 && currentOffset > 0) params.set('offset', String(Math.max(0, currentOffset - Number(params.get('limit') || 50))));
-    location.search = params.toString();
-  } else { button.disabled=false; alert('Deletion failed'); }
-}));
-document.querySelectorAll('.recapture').forEach((button) => button.addEventListener('click', async () => {
-  button.disabled = true;
-  const r = await fetch('/api/captures/' + button.dataset.id + '/recapture', {method:'POST'});
-  button.textContent = r.ok ? '✓' : '!';
-}));
-document.getElementById('capture-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const url = document.getElementById('capture-url').value.trim();
-  const status = document.getElementById('capture-status');
-  if (!url) return;
-  status.textContent = 'Queuing…';
-  try {
-    const r = await fetch('/api/captures', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({url}) });
-    const d = await r.json();
-    if (r.ok) { status.textContent = 'Queued ✓ (job #' + d.jobId + ')'; document.getElementById('capture-url').value = ''; }
-    else { status.textContent = 'Error: ' + (d.error ?? r.status); }
-  } catch(err) { status.textContent = 'Network error'; }
-});
-</script>
+<main class="page">
+  <div class="page-heading"><div><h1>Captures <span class="Counter">${totalCount}</span></h1><p>Search, read, and export your permanent web archive.</p></div></div>
+  <section class="Box" aria-labelledby="archive-heading">
+    <div class="Box-header"><h2 class="Box-title" id="archive-heading">Archive a URL</h2></div>
+    <div class="Box-body"><form class="capture-form" id="capture-form">
+      <input type="url" id="capture-url" value="${esc(archive)}" placeholder="https://example.com/article" aria-label="URL to archive" required>
+      <button class="Button--primary" type="submit">Archive URL</button>
+      <div class="capture-status" id="capture-status" role="status" aria-live="polite" aria-atomic="true"></div>
+    </form></div>
+  </section>
+  <section class="Box" aria-labelledby="filter-heading">
+    <div class="Box-header"><h2 class="Box-title" id="filter-heading">Filter captures</h2></div>
+    <div class="Box-body"><form class="filter-form" method="GET" action="/">
+      <label class="FormControl FormControl--q"><span class="FormControl-label">Search content</span><input type="search" name="q" value="${esc(q)}" placeholder="Words or phrase" autocomplete="off"></label>
+      <label class="FormControl FormControl--title"><span class="FormControl-label">Title</span><input type="search" name="title" value="${esc(url.searchParams.get('title') ?? '')}" placeholder="Capture title"></label>
+      <label class="FormControl FormControl--url"><span class="FormControl-label">URL</span><input type="search" name="url" value="${esc(url.searchParams.get('url') ?? '')}" placeholder="Domain or path"></label>
+      <label class="FormControl FormControl--date"><span class="FormControl-label">From date</span><input type="date" name="dateFrom" value="${esc(url.searchParams.get('dateFrom') ?? '')}"></label>
+      <label class="FormControl FormControl--date"><span class="FormControl-label">To date</span><input type="date" name="dateTo" value="${esc(url.searchParams.get('dateTo') ?? '')}"></label>
+      <label class="FormControl FormControl--status"><span class="FormControl-label">Status</span><select name="status"><option value=""${!url.searchParams.get('status') ? ' selected' : ''}>Succeeded</option><option value="all"${url.searchParams.get('status') === 'all' ? ' selected' : ''}>All status</option><option value="failed"${url.searchParams.get('status') === 'failed' ? ' selected' : ''}>Failed</option></select></label>
+      <label class="FormControl FormControl--mode"><span class="FormControl-label">Capture mode</span><select name="mode"><option value=""${!mode ? ' selected' : ''}>All modes</option><option value="article"${mode === 'article' ? ' selected' : ''}>Article</option><option value="full_page"${mode === 'full_page' ? ' selected' : ''}>Full page</option><option value="metadata_only"${mode === 'metadata_only' ? ' selected' : ''}>Metadata only</option></select></label>
+      <label class="FormControl FormControl--sort"><span class="FormControl-label">Sort by</span><select name="sort"><option value="relevance"${sort === 'relevance' ? ' selected' : ''}>Relevance</option><option value="newest"${sort === 'newest' ? ' selected' : ''}>Newest</option><option value="oldest"${sort === 'oldest' ? ' selected' : ''}>Oldest</option></select></label>
+      <label class="FormControl FormControl--limit"><span class="FormControl-label">Per page</span><select name="limit"><option${limit === 25 ? ' selected' : ''}>25</option><option${limit === 50 ? ' selected' : ''}>50</option><option${limit === 100 ? ' selected' : ''}>100</option><option${limit === 200 ? ' selected' : ''}>200</option></select></label>
+      <button class="filter-submit" type="submit">Apply filters</button>
+    </form></div>
+    ${tagCloud}
+  </section>
+  <section class="Box results-box" aria-label="Capture results">
+    <div class="results-header"><div class="results-summary"><strong>${matchingCount.toLocaleString()} capture${matchingCount === 1 ? '' : 's'}</strong>${matchingCount ? ` · showing ${offset + 1}–${Math.min(offset + rows.length, matchingCount)}` : ''}${q ? ` · matching “${esc(q)}”` : ''}${domain ? ` · from ${esc(domain)}` : ''}${tag ? ` · tagged ${esc(tag)}` : ''}</div><a class="failed-link" href="${filterHref('status', 'failed')}">${failedCount} failed</a></div>
+    <ul>${searchError ? `<li class="capture-error" style="padding:16px">${esc(searchError)}</li>` : items || '<li class="empty-state">No captures found.</li>'}</ul>
+  </section>
+  ${pagination}
+</main>
+<script>${INDEX_CLIENT_SCRIPT}</script>
 </body>
 </html>`;
 
@@ -626,6 +597,13 @@ function authRequired(): Response {
     status: 401,
     headers: { 'WWW-Authenticate': 'Basic realm="Packrat", charset="UTF-8"' },
   });
+}
+
+function safeExternalHref(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch { return null; }
 }
 
 function getDomain(url: string): string {

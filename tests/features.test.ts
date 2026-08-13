@@ -4,6 +4,7 @@ import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, updateLates
 import { renderRemoteMarkdown } from '../src/export/markdown.js';
 import { renderMarkdownHtml } from '../src/export/render-markdown.js';
 import { resolveCaptureIndexPage } from '../src/index-page.js';
+import { INDEX_CLIENT_SCRIPT } from '../src/index-client.js';
 
 let db: Database;
 beforeEach(() => { db = openDatabase(':memory:'); runMigrations(db); });
@@ -17,6 +18,12 @@ function add(urlString: string, title: string, capturedAt = '2026-01-01T00:00:00
   updateLatestCapture(db, url.id, id);
   return { id, url };
 }
+
+describe('index client', () => {
+  test('inline client script is valid JavaScript', () => {
+    expect(() => new Function(INDEX_CLIENT_SCRIPT)).not.toThrow();
+  });
+});
 
 describe('capture deletion', () => {
   test('removes dependent rows, preserves job history and selects replacement latest capture', () => {
