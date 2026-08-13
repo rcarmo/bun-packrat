@@ -407,14 +407,19 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
 :root{color-scheme:light;--bg:#fff;--surface:#f6f7f9;--fg:#171717;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--accent-fg:#fff;--success:#176b40;--success-fg:#fff;--danger:#a31616;--focus:#006fe6;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 @media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#232527;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--accent-fg:#071b2e;--success:#6fd69c;--success-fg:#092417;--danger:#ffb4ab;--focus:#9acbff}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);line-height:1.5}
-header{border-bottom:1px solid var(--border);padding:.8rem 1rem;display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
-header h1{margin:0;font-size:1.2rem;white-space:nowrap}
-form{display:flex;gap:.4rem;flex:1;min-width:200px}
-input[type=search],input[type=url],input[type=date],select{padding:.4rem .6rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--fg);font:inherit;font-size:.95rem}input[type=search]{flex:1}input::placeholder{color:var(--muted);opacity:1}
-button{-webkit-appearance:none;appearance:none;padding:.4rem .8rem;background:var(--accent);color:var(--accent-fg);-webkit-text-fill-color:currentColor;border:1px solid transparent;border-radius:4px;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.55;cursor:wait}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
-.capture-form{border-bottom:1px solid var(--border);padding:.5rem 1rem;display:flex;gap:.4rem;flex-wrap:wrap}
-.capture-form input{flex:1;min-width:200px;font-size:.9rem}
+header{border-bottom:1px solid var(--border);padding:.8rem 1rem}
+header h1{margin:0 0 .65rem;font-size:1.2rem}
+header form{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:.5rem;width:100%;min-width:0}
+header form [name=q]{grid-column:span 3}header form [name=title]{grid-column:span 2}header form [name=url]{grid-column:span 3}header form [name=dateFrom],header form [name=dateTo]{grid-column:span 2}
+header form [name=status],header form [name=mode]{grid-column:span 3}header form [name=sort],header form [name=limit],header form button{grid-column:span 2}
+input[type=search],input[type=url],input[type=date],select{width:100%;min-width:0;min-height:2.75rem;padding:.55rem .65rem;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--fg);font:inherit;font-size:.95rem}input::placeholder{color:var(--muted);opacity:1}
+button{-webkit-appearance:none;appearance:none;min-height:2.75rem;padding:.5rem .8rem;background:var(--accent);color:var(--accent-fg);-webkit-text-fill-color:currentColor;border:1px solid transparent;border-radius:4px;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.55;cursor:wait}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.capture-form{border-bottom:1px solid var(--border);padding:.65rem 1rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.5rem;align-items:center}
+.capture-form input{min-width:0;font-size:.9rem}
 .capture-form button{background:var(--success);color:var(--success-fg);font-size:.85rem}
+@media(max-width:800px){header form{grid-template-columns:repeat(4,minmax(0,1fr))}header form [name=q]{grid-column:1/-1}header form [name=title],header form [name=url],header form [name=dateFrom],header form [name=dateTo],header form [name=status],header form [name=mode]{grid-column:span 2}header form [name=sort],header form [name=limit]{grid-column:span 1}header form button{grid-column:span 2}}
+@media(max-width:600px){header form{grid-template-columns:repeat(2,minmax(0,1fr))}header form [name=q],header form [name=title],header form [name=url],header form button{grid-column:1/-1}header form [name=dateFrom],header form [name=dateTo],header form [name=status],header form [name=mode],header form [name=sort],header form [name=limit]{grid-column:span 1}}
+@media(max-width:480px){header form{grid-template-columns:minmax(0,1fr)}header form>*{grid-column:1!important}.capture-form{grid-template-columns:minmax(0,1fr)}.capture-form button{width:100%}}
 .count{color:var(--muted);font-size:.82rem;padding:.3rem 1rem;border-bottom:1px solid var(--border)}
 .tag-cloud{padding:.4rem 1rem .3rem;display:flex;flex-wrap:wrap;gap:.3rem;border-bottom:1px solid var(--border)}
 .tag{font-size:.78rem;padding:.15rem .4rem;border-radius:12px;background:var(--border);color:var(--fg);text-decoration:none;display:inline-flex;gap:.3em;align-items:center}
