@@ -178,6 +178,7 @@ export async function capturePage(
 
     // 7. Extract article content
     const extracted = extractContent(renderedHtml, finalUrl);
+    warnings.push(...extracted.extractionWarnings);
     const renderedTextLength = extracted.extractedText?.length ?? 0;
     if (extracted.mode === 'full_page') {
       warnings.push('Readability extraction failed or yielded too little text; using full-page mode');

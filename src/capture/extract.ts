@@ -23,6 +23,8 @@ export interface ExtractResult {
   articleHtml: string | null;
   /** Set when a text-matched semantic container restores images Readability omitted. */
   imageRecovery: { readabilityImages: number; recoveredImages: number } | null;
+  /** Extraction warnings detected while protecting structured article content. */
+  extractionWarnings: string[];
 }
 
 /** Minimum text length for a Readability result to be considered useful */
@@ -58,6 +60,13 @@ export function extractContent(rawHtml: string, url: string): ExtractResult {
     document.querySelector('html')?.getAttribute('lang') ??
     null;
 
+  // Browser syntax-highlighting plugins often add wrappers such as
+  // `code-toolbar` around otherwise valid <pre> blocks. Readability assigns a
+  // negative score to class/id values containing "tool" and can delete the
+  // complete wrapper, including the sample code. Neutralise only immediate
+  // extraction-hostile wrappers on the disposable parsing DOM.
+  const protectedCodeBlocks = protectCodeBlocksForReadability(document);
+
   // Attempt Readability extraction
   let reader: Readability | null = null;
   let article: ReturnType<Readability['parse']> | null = null;
@@ -77,6 +86,10 @@ export function extractContent(rawHtml: string, url: string): ExtractResult {
     article.textContent &&
     article.textContent.trim().length >= MIN_ARTICLE_TEXT_LENGTH
   ) {
+    const retainedProtectedCodeBlocks = countRetainedProtectedCodeBlocks(article.content ?? '', protectedCodeBlocks);
+    const extractionWarnings = retainedProtectedCodeBlocks < protectedCodeBlocks.length
+      ? [`Readability retained ${retainedProtectedCodeBlocks} of ${protectedCodeBlocks.length} code blocks protected from extraction-hostile wrappers`]
+      : [];
     return {
       mode: 'article',
       title: article.title ?? ogTitle,
@@ -87,6 +100,7 @@ export function extractContent(rawHtml: string, url: string): ExtractResult {
       lang: article.lang ?? htmlLang,
       extractedText: article.textContent?.trim() ?? null,
       ...recoverSemanticArticleImages(rawHtml, article.content ?? '', article.textContent ?? ''),
+      extractionWarnings,
     };
   }
 
@@ -109,7 +123,47 @@ export function extractContent(rawHtml: string, url: string): ExtractResult {
     extractedText: pageText ? pageText.slice(0, 50_000) : null,
     articleHtml: null,
     imageRecovery: null,
+    extractionWarnings: [],
   };
+}
+
+/** Neutralise the syntax-highlighter token that makes Readability discard an
+ * immediate <pre> wrapper. Preserve unrelated classes and stable IDs. The
+ * original rendered snapshot is untouched because parsing created a new DOM. */
+function protectCodeBlocksForReadability(document: Document): string[] {
+  const protectedBlocks: string[] = [];
+  document.querySelectorAll('pre').forEach((pre) => {
+    const wrapper = pre.parentElement;
+    if (!wrapper) return;
+    const classes = (wrapper.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
+    const retainedClasses = classes.filter((className) => className.toLowerCase() !== 'code-toolbar');
+    if (retainedClasses.length === classes.length) return;
+    if (retainedClasses.length) wrapper.setAttribute('class', retainedClasses.join(' '));
+    else wrapper.removeAttribute('class');
+    protectedBlocks.push(codeBlockSignature(pre.textContent ?? ''));
+  });
+  return protectedBlocks;
+}
+
+function countRetainedProtectedCodeBlocks(html: string, protectedBlocks: string[]): number {
+  if (!protectedBlocks.length) return 0;
+  const required = new Map<string, number>();
+  for (const signature of protectedBlocks) required.set(signature, (required.get(signature) ?? 0) + 1);
+  const { document } = parseHTML(html);
+  let retained = 0;
+  document.querySelectorAll('pre').forEach((pre) => {
+    const signature = codeBlockSignature(pre.textContent ?? '');
+    const remaining = required.get(signature) ?? 0;
+    if (remaining > 0) {
+      retained++;
+      required.set(signature, remaining - 1);
+    }
+  });
+  return retained;
+}
+
+function codeBlockSignature(value: string): string {
+  return value.replace(/\r\n?/g, '\n').trim();
 }
 
 /** Readability occasionally removes image-heavy figures while retaining the

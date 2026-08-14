@@ -69,6 +69,39 @@ describe('Phase 1 pipeline proof', () => {
     expect(result.extractedText).toBeTruthy();
   });
 
+  test('retains code inside extraction-hostile syntax-highlighter wrappers', () => {
+    const intro = '<p>Detailed system administration instructions and explanatory context for readers.</p>'.repeat(6);
+    const raw = `<html><head><title>Router guide</title></head><body><div class="post-content">${intro}<h2>Example configuration</h2><div class="highlight"><div id="example-config" class="code-toolbar language-ini"><pre><code class="language-ini">[Match]\nName=eth0\n\n[Network]\nDHCP=yes</code></pre><div class="toolbar"><button>Copy</button></div></div></div></div></body></html>`;
+    const extracted = extractContent(raw, 'https://example.com/router');
+    expect(extracted.mode).toBe('article');
+    expect(extracted.articleHtml).toContain('<pre>');
+    expect(extracted.articleHtml).toContain('[Match]');
+    expect(extracted.articleHtml).toContain('id="example-config"');
+    expect(extracted.articleHtml?.match(/<pre\b/g)).toHaveLength(1);
+    expect(extracted.extractionWarnings).toEqual([]);
+  });
+
+  test('leaves ordinary and generic widget code wrappers to Readability', () => {
+    const intro = '<p>Detailed system administration instructions and explanatory context for readers.</p>'.repeat(6);
+    const sample = Array.from({ length:10 }, (_, index) => `option${index}=value${index}`).join('\n');
+    for (const className of ['example', 'widget', 'tools']) {
+      const raw = `<html><head><title>Router guide</title></head><body><article>${intro}<div class="${className}"><pre><code>${sample}</code></pre></div></article></body></html>`;
+      const extracted = extractContent(raw, 'https://example.com/router');
+      expect(extracted.extractionWarnings).toEqual([]);
+    }
+  });
+
+  test('warns when a protected block is lost even if an unrelated pre survives', () => {
+    const intro = '<p>Detailed system administration instructions and explanatory context for readers.</p>'.repeat(10);
+    const raw = `<html><head><title>Router guide</title></head><body><article>${intro}<pre><code>ordinary=survives</code></pre><aside><div class="code-toolbar"><pre><code>protected=is-dropped</code></pre></div></aside></article></body></html>`;
+    const extracted = extractContent(raw, 'https://example.com/router');
+    expect(extracted.articleHtml).toContain('ordinary=survives');
+    expect(extracted.articleHtml).not.toContain('protected=is-dropped');
+    expect(extracted.extractionWarnings).toEqual([
+      'Readability retained 0 of 1 code blocks protected from extraction-hostile wrappers',
+    ]);
+  });
+
   test('recovers images from a text-matched semantic article when Readability omits them', () => {
     const paragraphs = Array.from({ length: 8 }, (_, i) => `<p>Paragraph ${i} contains substantial renewable energy reporting and technical context for readers.</p>`).join('');
     const raw = `<html><body><nav>Navigation chrome</nav><main><article id="story">${paragraphs}<figure><img src="https://images.example.com/a.jpg" alt="A"></figure><figure><img src="https://images.example.com/b.jpg" alt="B"></figure></article></main></body></html>`;
