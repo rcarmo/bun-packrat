@@ -6,7 +6,7 @@ Replaces a 35 GB / 130,000-file ArchiveBox deployment with one SQLite database a
 
 ## Status
 
-All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 115 tests pass across 12 files, including real `epubcheck` validation when installed.
+All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 117 tests pass across 13 files, including real `epubcheck` validation when installed.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -286,7 +286,9 @@ An in-process poller (`JobQueue`) polls the `jobs` table on a configurable inter
 ## Testing
 
 ```bash
-bun test                    # all 115 tests (epubcheck test skips if unavailable)
+bun test                    # all 117 tests (epubcheck test skips if unavailable)
+bun test tests/api.test.ts  # agent search/content HTTP API
+bun test tests/canonical.test.ts # MHTML decoding and safe rendering
 bun test tests/db.test.ts   # schema and database helpers
 bun test tests/url.test.ts  # URL normaliser and SSRF guard
 bun test tests/sanitize.test.ts   # HTML sanitiser (hostile-input coverage)

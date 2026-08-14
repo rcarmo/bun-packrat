@@ -2,7 +2,7 @@
 
 Project path: `/workspace/projects/bun-packrat`  
 PRD: `docs/PRD.md`  
-Status: **Canonical MHTML capture rework in validation; ArchiveBox import and cutover are outside this change**
+Status: **Canonical MHTML capture and agent content API deployed; ArchiveBox import and hostname cutover remain outside this change**
 
 ---
 
@@ -43,6 +43,7 @@ Status: **Canonical MHTML capture rework in validation; ArchiveBox import and cu
 | EPUB 3 export | `src/export/epub.ts` | ✅ |
 | On-demand PDF export via Playwright | `src/export/pdf.ts` | ✅ |
 | Export routes on HTTP server | `src/server.ts` | ✅ |
+| Agent search/content API (`mhtml`, HTML, Markdown, ZIP, EPUB, PDF) | `src/server.ts` | ✅ |
 | Tags API | `src/server.ts` | ✅ |
 | Freshness reuse, forced recapture, aliases and notes | pipeline, DB, server | ✅ |
 | Permanent capture deletion (UI/API/CLI, latest repair, audit preservation) | DB, server, CLI | ✅ |
@@ -138,6 +139,8 @@ bun-packrat/
 │   └── types.ts                       # shared TypeScript types
 ├── tests/
 │   ├── db.test.ts                     # schema, migrations, query helpers
+│   ├── api.test.ts                    # agent search/content API integration tests
+│   ├── canonical.test.ts              # MHTML detection, decoding and safe rendering
 │   ├── epub.test.ts                   # EPUB 3 export (structure + spec compliance)
 │   ├── features.test.ts               # delete/paging/Markdown provenance
 │   ├── markdown.test.ts               # Markdown + ZIP export
