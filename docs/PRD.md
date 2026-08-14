@@ -67,9 +67,11 @@ The user chooses HTML, Markdown, EPUB or PDF from an archive entry. HTML is rend
 
 ### Read as Markdown
 
-A capture detail page offers `Archived HTML` and `Markdown` reading modes.
+A capture detail page offers distinct `Full page`, `Article` and `Markdown` reading modes.
 
-The Markdown mode converts the captured semantic article content to Markdown and renders it as server-generated HTML. It is a view of the stored capture, not a new persistent representation.
+The Article mode is the primary simplified reading view. It derives semantic article HTML from canonical MHTML, retains captured images as embedded `data:` resources, uses responsive reader typography and makes no external requests.
+
+The Markdown mode converts the captured semantic article content to Markdown and renders it as server-generated HTML. It is a text-oriented view of the stored capture, not a substitute for the offline Article view or a new persistent representation. When remote images are disabled, omitted images use plain alt text without bracket-style placeholders.
 
 Images in Markdown mode reference their original absolute HTTP or HTTPS URLs instead of embedded `data:` URLs or extracted local assets. To support this view:
 
@@ -193,7 +195,7 @@ The archive UI must provide:
 - URL, domain, title, tag, date, status and capture-mode filters;
 - newest, oldest and relevance sorting;
 - capture detail and provenance;
-- archived HTML and Markdown reading modes;
+- full-page, simplified offline Article and text-oriented Markdown reading modes;
 - an explicit control and privacy warning before Markdown mode loads original remote images;
 - duplicate and failed-import views;
 - export actions;
@@ -231,9 +233,10 @@ GET    /api/jobs/:id              inspect progress and errors
 GET    /api/captures              search, filter, sort and page captures
 GET    /api/captures/:id          retrieve metadata and available content formats
 GET    /api/captures/:id/content/:format
-                                  extract mhtml|html|markdown|markdown-zip|epub|pdf
+                                  extract mhtml|html|article-html|markdown|markdown-zip|epub|pdf
 DELETE /api/captures/:id          delete one capture after explicit confirmation
 GET    /captures/:id              view archived HTML
+GET    /captures/:id/article      view simplified offline article with captured images
 GET    /captures/:id/markdown     view server-rendered Markdown
 GET    /captures/:id/markdown.raw retrieve raw Markdown with original image URLs
 GET    /captures/:id/export/html  download HTML
@@ -263,6 +266,7 @@ archive backup <destination.sqlite>
 |---|---|---|
 | `mhtml` | `multipart/related` | Canonical Chromium MHTML bytes. Legacy HTML captures return `409 Conflict` because no canonical MHTML exists. |
 | `html` | `text/html` | Safe standalone full-page HTML derived from canonical MHTML, or legacy canonical HTML. |
+| `article-html` | `text/html` | Simplified semantic article HTML with captured images embedded and no external dependencies. |
 | `markdown` | `text/markdown` | Article Markdown with original HTTP or HTTPS image URLs. It can disclose those origins only when a client subsequently loads them. |
 | `markdown-zip` | `application/zip` | Offline Markdown and local assets. |
 | `epub` | `application/epub+zip` | On-demand EPUB 3 article export. |

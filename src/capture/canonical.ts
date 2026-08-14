@@ -104,10 +104,16 @@ export function renderMhtmlToHtml(raw: string): string {
     if (style != null) element.setAttribute('style', rewriteCss(style, parsed.rootLocation, resources));
   });
 
-  document.querySelectorAll('img[src]').forEach((image) => {
-    const src = image.getAttribute('src') ?? '';
-    const part = findResource(resources, src, parsed.rootLocation);
-    const dataUrl = part ? resourceDataUrl(part) : safeExistingDataUrl(src);
+  document.querySelectorAll('img').forEach((image) => {
+    const candidates = imageResourceCandidates(image);
+    let dataUrl: string | null = null;
+    for (const candidate of candidates) {
+      const existing = safeExistingDataUrl(candidate);
+      if (existing) { dataUrl = existing; break; }
+      const part = findResource(resources, candidate, parsed.rootLocation);
+      const embedded = part ? resourceDataUrl(part) : null;
+      if (embedded) { dataUrl = embedded; break; }
+    }
     if (dataUrl) image.setAttribute('src', dataUrl);
     else image.removeAttribute('src');
     image.removeAttribute('srcset');
@@ -178,10 +184,56 @@ function findResource(resources: Map<string, MimePart>, value: string, base: str
     const exact = resources.get(resolved.toString());
     if (exact) return exact;
     resolved.hash = '';
-    return resources.get(resolved.toString()) ?? null;
+    const withoutHash = resources.get(resolved.toString());
+    if (withoutHash) return withoutHash;
+
+    // Lazy-image CDNs often capture a transformed URL whose path/query embeds
+    // the original image URL (Substack is a common example). Match only a
+    // complete decoded original URL, never a hostname or filename fragment.
+    const original = resolved.toString();
+    for (const part of new Set(resources.values())) {
+      if (!part.location) continue;
+      try {
+        if (decodeURIComponent(part.location).includes(original)) return part;
+      } catch {}
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+function imageResourceCandidates(image: Element): string[] {
+  const candidates: string[] = [];
+  const add = (value: string | null | undefined) => {
+    const candidate = value?.trim();
+    if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+  };
+  add(image.getAttribute('src'));
+  for (const value of parseSrcset(image.getAttribute('srcset') ?? '')) add(value);
+  image.parentElement?.querySelectorAll('source[srcset]').forEach((source) => {
+    for (const value of parseSrcset(source.getAttribute('srcset') ?? '')) add(value);
+  });
+  for (const name of ['data-src', 'data-lazy-src', 'data-original']) add(image.getAttribute(name));
+  const dataAttrs = image.getAttribute('data-attrs');
+  if (dataAttrs) {
+    try {
+      const parsed: Record<string, unknown> = JSON.parse(dataAttrs);
+      for (const name of ['src', 'srcNoWatermark']) {
+        const candidate = parsed[name];
+        if (typeof candidate === 'string') add(candidate);
+      }
+    } catch {}
+  }
+  return candidates;
+}
+
+function parseSrcset(value: string): string[] {
+  const candidates: string[] = [];
+  const described = /(?:^|,\s*)(\S+)(?:\s+\d+(?:\.\d+)?[wx])(?=\s*,|\s*$)/g;
+  for (const match of value.matchAll(described)) candidates.push(match[1]);
+  if (!candidates.length && value.trim() && !value.includes(',')) candidates.push(value.trim().split(/\s+/, 1)[0]);
+  return candidates;
 }
 
 function rewriteCss(css: string, base: string, resources: Map<string, MimePart>): string {

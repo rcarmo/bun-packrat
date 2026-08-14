@@ -82,7 +82,8 @@ describe('agent capture API', () => {
     const result = await response.json() as any;
     expect(result.total).toBe(1);
     expect(result.captures[0].id).toBe(canonicalId);
-    expect(result.captures[0].availableFormats).toEqual(['mhtml', 'html', 'markdown', 'markdown-zip', 'epub', 'pdf']);
+    expect(result.captures[0].availableFormats).toEqual(['mhtml', 'html', 'article-html', 'markdown', 'markdown-zip', 'epub', 'pdf']);
+    expect(result.captures[0].links.content['article-html']).toBe(`/api/captures/${canonicalId}/content/article-html`);
     expect(result.captures[0].links.content.markdown).toBe(`/api/captures/${canonicalId}/content/markdown`);
 
     const malformed = await fetch(`${base}/api/captures?q=${encodeURIComponent('"unterminated')}`);
@@ -94,12 +95,13 @@ describe('agent capture API', () => {
     const expectedTypes: Record<string, string> = {
       mhtml: 'multipart/related',
       html: 'text/html; charset=utf-8',
+      'article-html': 'text/html; charset=utf-8',
       markdown: 'text/markdown; charset=utf-8',
       'markdown-zip': 'application/zip',
       epub: 'application/epub+zip',
       pdf: 'application/pdf',
     };
-    const signatures: Record<string, string> = { mhtml: 'From: <Saved by Blink>', html: '<!doctype html>', 'markdown-zip': 'PK', epub: 'PK', pdf: '%PDF-' };
+    const signatures: Record<string, string> = { mhtml: 'From: <Saved by Blink>', html: '<!doctype html>', 'article-html': '<!doctype html>', 'markdown-zip': 'PK', epub: 'PK', pdf: '%PDF-' };
 
     for (const [format, contentType] of Object.entries(expectedTypes)) {
       const response = await fetch(`${base}/api/captures/${canonicalId}/content/${format}`);
@@ -113,11 +115,15 @@ describe('agent capture API', () => {
       expect(body.byteLength).toBeGreaterThan(20);
       if (signatures[format]) expect(body.subarray(0, signatures[format].length).toString()).toBe(signatures[format]);
       if (format === 'html') expect(body.toString()).toContain('http-equiv="Content-Security-Policy"');
+      if (format === 'article-html') {
+        expect(body.toString()).toContain('packrat-article-style');
+        expect(body.toString()).toContain('Canonical API fixture');
+      }
       if (format === 'markdown') expect(body.toString()).toContain('Canonical API fixture');
     }
 
     const legacyMeta = await fetch(`${base}/api/captures/${legacyId}`).then((response) => response.json()) as any;
-    expect(legacyMeta.availableFormats).toEqual(['html', 'markdown', 'markdown-zip', 'epub', 'pdf']);
+    expect(legacyMeta.availableFormats).toEqual(['html', 'article-html', 'markdown', 'markdown-zip', 'epub', 'pdf']);
     const unavailable = await fetch(`${base}/api/captures/${legacyId}/content/mhtml`);
     expect(unavailable.status).toBe(409);
     expect((await unavailable.json() as any).error).toContain('unavailable');

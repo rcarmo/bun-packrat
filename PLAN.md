@@ -47,7 +47,8 @@ Status: **Canonical MHTML capture and agent content API deployed; ArchiveBox imp
 | Tags API | `src/server.ts` | ✅ |
 | Freshness reuse, forced recapture, aliases and notes | pipeline, DB, server | ✅ |
 | Permanent capture deletion (UI/API/CLI, latest repair, audit preservation) | DB, server, CLI | ✅ |
-| Markdown reading mode with original image provenance and privacy gate | capture, DB, export, server | ✅ |
+| Offline simplified Article view with captured images | canonical renderer, server | ✅ |
+| Text-oriented Markdown mode with original image provenance and privacy gate | capture, DB, export, server | ✅ |
 | Matching counts and deterministic paging metadata | DB, server | ✅ |
 | Idempotency keys and queued-job cancellation | DB, HTTP API | ✅ |
 | HTTP Basic auth required by default | `src/config.ts`, `src/server.ts` | ✅ |

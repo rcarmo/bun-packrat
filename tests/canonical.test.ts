@@ -24,7 +24,7 @@ function fixture(lineEnding = '\r\n'): string {
     'Content-Transfer-Encoding: quoted-printable',
     'Content-Location: https://example.com/article',
     '',
-    qp(`<!doctype html><html><head><title>Fixture</title><link rel="stylesheet" href="https://example.com/site.css"><script>alert(1)</script></head><body onload="evil()"><nav>Full page navigation</nav><main><article>${ARTICLE}<img src="https://example.com/pixel.png" srcset="https://remote.invalid/two.png 2x"><form action="https://remote.invalid/post"><button>Send</button><p>Kept form text</p></form></article></main></body></html>`),
+    qp(`<!doctype html><html><head><title>Fixture</title><link rel="stylesheet" href="https://example.com/site.css"><script>alert(1)</script></head><body onload="evil()"><nav>Full page navigation</nav><main><article>${ARTICLE}<img src="https://example.com/pixel.png" srcset="https://remote.invalid/two.png 2x"><img data-attrs='{"src":"https://origin.example/lazy.png"}' alt="Lazy captured"><form action="https://remote.invalid/post"><button>Send</button><p>Kept form text</p></form></article></main></body></html>`),
     `--${BOUNDARY}`,
     'Content-Type: text/css',
     'Content-Transfer-Encoding: quoted-printable',
@@ -35,6 +35,12 @@ function fixture(lineEnding = '\r\n'): string {
     'Content-Type: image/png',
     'Content-Transfer-Encoding: base64',
     'Content-Location: https://example.com/pixel.png',
+    '',
+    PNG.toString('base64'),
+    `--${BOUNDARY}`,
+    'Content-Type: image/png',
+    'Content-Transfer-Encoding: base64',
+    'Content-Location: https://cdn.example/image/fetch/https%3A%2F%2Forigin.example%2Flazy.png',
     '',
     PNG.toString('base64'),
     `--${BOUNDARY}--`,
@@ -57,7 +63,8 @@ describe('canonical capture formats', () => {
     expect(html).toContain(':not(pre)>code{overflow-wrap:anywhere');
     expect(html).toContain('http-equiv="Content-Security-Policy"');
     expect(html).toContain("default-src 'none'");
-    expect(html).toContain('data:image/png;base64,');
+    expect(html.match(/data:image\/png;base64,/g)).toHaveLength(3);
+    expect(html).toContain('alt="Lazy captured"');
     expect(html).toContain('Kept form text');
     expect(html).not.toContain('<script');
     expect(html).not.toContain('<form');

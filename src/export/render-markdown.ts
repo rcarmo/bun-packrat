@@ -89,7 +89,7 @@ function inline(text: string, remoteImages: boolean): string {
       const url = bracketedUrl || plainUrl;
       return remoteImages
         ? `<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ''} loading="lazy" referrerpolicy="no-referrer">`
-        : `<span class="image-placeholder">[Image: ${alt || new URL(decodeHtmlEntities(url)).hostname}]</span>`;
+        : `<span class="image-placeholder" role="img" aria-label="Image omitted">${alt || `Image from ${new URL(decodeHtmlEntities(url)).hostname}`}</span>`;
     });
   value = value.replace(/\[([^\]]+)\]\((?:&lt;(https?:\/\/.*?)&gt;|(https?:\/\/[^)]+))\)/g,
     (_m, text, bracketedUrl, plainUrl) => `<a href="${bracketedUrl || plainUrl}" rel="noopener noreferrer">${text}</a>`);

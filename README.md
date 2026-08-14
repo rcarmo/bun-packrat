@@ -121,13 +121,15 @@ GET    /api/captures/:id
 DELETE /api/captures/:id
        Body: { "confirm": "<capture-id>" }; permanently deletes the capture
 
+GET    /captures/:id/article
+       Simplified offline article with captured images embedded; no remote requests
 GET    /captures/:id/markdown
-       Server-rendered Markdown; original remote images disabled until enabled
+       Text-oriented rendered Markdown; original remote images disabled until enabled
 GET    /captures/:id/markdown.raw
        Raw Markdown referencing original image URLs
 
 GET    /api/captures/:id/content/:format
-       Extract mhtml, html, markdown, markdown-zip, epub or pdf with provenance headers
+       Extract mhtml, html, article-html, markdown, markdown-zip, epub or pdf with provenance headers
 
 GET    /bookmarklet.js
        Bookmarklet payload; save as javascript:(()=>{...contents...})()
@@ -272,7 +274,8 @@ All exports derive from the canonical MHTML or legacy HTML BLOB in SQLite. No se
 |---|---|
 | HTML | Decode canonical MHTML → safe standalone full-page HTML with captured CSS/images/fonts |
 | Canonical MHTML | Raw `multipart/related` download from the capture's `?raw=1` route |
-| Markdown view | Derive article HTML, then use stored image provenance; remote images gated per view |
+| Article view | Derive simplified article HTML with captured images embedded; fully offline |
+| Markdown view | Text-oriented derivation using stored image provenance; remote images gated per view |
 | Markdown + ZIP | Derive article HTML → convert to Markdown → extract data: URL images → offline ZIP |
 | EPUB 3 | Derive article HTML → extract assets → build EPUB ZIP (pure Bun, no external tools) |
 | PDF | Render safe full-page HTML in Playwright → stream PDF → delete temp file |

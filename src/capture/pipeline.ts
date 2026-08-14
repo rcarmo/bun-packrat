@@ -162,6 +162,7 @@ export async function capturePage(
     // canonical snapshot. MHTML keeps Chromium's rendered DOM and loaded
     // resources together without a second asset-fetching pass.
     await scrollPage(page);
+    await materialiseLazyImages(page);
     await page.evaluate(DISMISS_OVERLAYS_JS).catch(() => {});
     const renderedHtml = await page.content();
     const cdp = await context.newCDPSession(page);
@@ -303,6 +304,23 @@ async function scrollPage(page: any): Promise<void> {
       });
     })
     .catch(() => {});
+}
+
+/** Ask browser-native lazy images to load before the canonical snapshot. This
+ * does not fetch anything outside the guarded Playwright context. */
+async function materialiseLazyImages(page: any): Promise<void> {
+  await page.evaluate(() => {
+    document.querySelectorAll('img').forEach((image) => {
+      image.loading = 'eager';
+      const fallback = image.getAttribute('data-src') ?? image.getAttribute('data-lazy-src') ?? image.getAttribute('data-original');
+      if (!image.currentSrc && !image.src && fallback) image.src = fallback;
+    });
+  }).catch(() => {});
+  await page.waitForTimeout(750);
+  await page.evaluate(async () => {
+    const images = Array.from(document.images);
+    await Promise.all(images.map((image) => image.decode().catch(() => {})));
+  }).catch(() => {});
 }
 
 /** Find the chromium executable in the browsers path */

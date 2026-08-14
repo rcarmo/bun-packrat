@@ -97,7 +97,9 @@ describe('Markdown reading mode', () => {
     expect(result?.markdown).toContain('![Diagram](https://images.example.com/diagram.png "Architecture")');
     expect(result?.markdown).not.toContain('Archive metadata must not leak');
     expect(result?.markdown).not.toContain('data:image');
-    expect(renderMarkdownHtml(result!.markdown, false)).toContain('image-placeholder');
+    expect(renderMarkdownHtml(result!.markdown, false)).toContain('<span class="image-placeholder"');
+    expect(renderMarkdownHtml(result!.markdown, false)).toContain('>Diagram</span>');
+    expect(renderMarkdownHtml(result!.markdown, false)).not.toContain('[Image:');
     expect(renderMarkdownHtml(result!.markdown, false)).not.toContain('<img');
     expect(renderMarkdownHtml(result!.markdown, true)).toContain('<img src="https://images.example.com/diagram.png"');
   });

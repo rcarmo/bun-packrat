@@ -17,7 +17,7 @@ import { exportHtml, slugify } from './export/html.js';
 import { exportMarkdownZip, renderRemoteMarkdown } from './export/markdown.js';
 import { renderMarkdownHtml } from './export/render-markdown.js';
 import { resolveCaptureIndexPage } from './index-page.js';
-import { detectStoredCaptureFormat, readStoredCaptureBytes, renderStoredCaptureHtml } from './capture/canonical.js';
+import { deriveStoredArticleHtml, detectStoredCaptureFormat, readStoredCaptureBytes, renderStoredCaptureHtml } from './capture/canonical.js';
 import { INDEX_CLIENT_SCRIPT } from './index-client.js';
 import { exportEpub } from './export/epub.js';
 import { exportPdf } from './export/pdf.js';
@@ -76,6 +76,11 @@ const server = Bun.serve({
       return serveCaptureHtml(db, id, false);
     }
 
+    const articleMatch = path.match(/^\/captures\/(\d+)\/article$/);
+    if (method === 'GET' && articleMatch) {
+      return serveArticleHtml(db, parseInt(articleMatch[1], 10));
+    }
+
     const markdownMatch = path.match(/^\/captures\/(\d+)\/markdown(\.raw)?$/);
     if (method === 'GET' && markdownMatch) {
       const id = parseInt(markdownMatch[1], 10);
@@ -87,7 +92,7 @@ const server = Bun.serve({
       return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1');
     }
 
-    const contentMatch = path.match(/^\/api\/captures\/(\d+)\/content\/(mhtml|html|markdown|markdown-zip|epub|pdf)$/);
+    const contentMatch = path.match(/^\/api\/captures\/(\d+)\/content\/(mhtml|html|article-html|markdown|markdown-zip|epub|pdf)$/);
     if (method === 'GET' && contentMatch) {
       return handleApiContent(db, parseInt(contentMatch[1], 10), contentMatch[2], config);
     }
@@ -325,6 +330,18 @@ async function handleApiContent(
     }});
   }
 
+  if (format === 'article-html') {
+    const row = getCaptureHtml(db, id);
+    if (!row?.html) return json404('Capture body not found');
+    const html = renderArticleDocument(deriveStoredArticleHtml(row, meta.final_url));
+    return new Response(html, { headers: {
+      ...headers,
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${slugify(meta.title ?? `capture-${id}`)}-article.html"`,
+      'Content-Security-Policy': csp(),
+    }});
+  }
+
   if (format === 'markdown') {
     const rendered = await renderRemoteMarkdown(db, id);
     if (!rendered) return json404('Capture not found or not yet succeeded');
@@ -371,7 +388,7 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
 
   let html = renderStoredCaptureHtml(row);
   if (!raw) {
-    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Full page</strong> · <a style="color:#9cf" href="/captures/${id}/markdown">Article</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Canonical MHTML</a></nav>`;
+    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Full page</strong> · <a style="color:#9cf" href="/captures/${id}/article">Article</a> · <a style="color:#9cf" href="/captures/${id}/markdown">Markdown</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Canonical MHTML</a></nav>`;
     html = html.replace(/<body([^>]*)>/i, `<body$1>${toolbar}`);
   }
   return new Response(html, {
@@ -383,6 +400,27 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
       'Referrer-Policy': 'no-referrer',
     },
   });
+}
+
+async function serveArticleHtml(db: Database, id: number): Promise<Response> {
+  const meta = getCaptureById(db, id);
+  const row = getCaptureHtml(db, id);
+  if (!meta || meta.status !== 'succeeded' || !row?.html) return json404('Capture not found or not yet succeeded');
+  const article = renderArticleDocument(deriveStoredArticleHtml(row, meta.final_url));
+  const toolbar = `<nav class="packrat-article-switch"><a href="/captures/${id}">Full page</a><strong>Article</strong><a href="/captures/${id}/markdown">Markdown</a><a href="/captures/${id}?raw=1">Canonical MHTML</a></nav>`;
+  return new Response(article.replace(/<body([^>]*)>/i, `<body$1>${toolbar}`), { headers: {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': csp(),
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  }});
+}
+
+function renderArticleDocument(html: string): string {
+  const articleCss = `<style id="packrat-article-style">:root{color-scheme:light;--bg:#fff;--fg:#202124;--muted:#5f6368;--surface:#f4f5f7;--border:#c7cbd1;--accent:#0057b7}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--fg:#f1f3f4;--muted:#bdc1c6;--surface:#252729;--border:#62666b;--accent:#8fc5ff}}*{box-sizing:border-box}html{background:var(--bg);color:var(--fg)}body{max-width:780px;margin:auto;padding:0 1rem 3rem;background:var(--bg);color:var(--fg);font:18px/1.65 Georgia,serif;overflow-wrap:anywhere}.packrat-article-switch{position:sticky;top:0;z-index:10;display:flex;gap:.85rem;align-items:center;margin:0 -1rem 1.5rem;padding:.65rem 1rem;background:#222;color:#fff;font:14px/1.4 system-ui,sans-serif}.packrat-article-switch a{color:#9cf}.packrat-content{min-width:0}h1,h2,h3,h4{line-height:1.2;margin-top:1.5em}a{color:var(--accent)}img{display:block;max-width:100%;height:auto;margin:1.5rem auto}figure{max-width:100%;margin:1.5rem 0}figcaption{color:var(--muted);font:14px/1.45 system-ui,sans-serif;text-align:center}pre{max-width:100%;padding:1rem;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:5px;font:14px/1.45 ui-monospace,monospace}:not(pre)>code{padding:.1em .25em;background:var(--surface);overflow-wrap:anywhere;word-break:break-word}blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--border)}table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.5rem .65rem;border:1px solid var(--border);text-align:left;vertical-align:top}@media(max-width:480px){body{font-size:17px}.packrat-article-switch{gap:.65rem;overflow-x:auto;white-space:nowrap}}</style>`;
+  return html.includes('</head>') ? html.replace(/<\/head>/i, `${articleCss}</head>`) : html.replace(/<body/i, `<head>${articleCss}</head><body`);
 }
 
 async function renderIndex(db: Database, url: URL): Promise<Response> {
@@ -439,6 +477,7 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
           ${c.warnings ? '<span class="warnings" title="Capture has warnings">⚠</span>' : ''}
         </div>
         <div class="item-actions" role="group" aria-label="Actions for ${esc(c.title ?? 'capture')}">
+          <a class="view-link" href="/captures/${c.id}/article">Article</a>
           <a class="view-link" href="/captures/${c.id}/markdown">Markdown</a>
           ${sourceHref ? `<a class="source-link" href="${esc(sourceHref)}" rel="noopener" target="_blank" title="Open original page" aria-label="Open original page">↗</a>` : ''}
           <a class="export-link" href="/captures/${c.id}/export/html" title="Download HTML">⬇ HTML</a>
@@ -603,7 +642,7 @@ function summariseCaptureForApi(c: any) {
   const summary = summariseCapture(c);
   let formats: string[] = [];
   if (c.status === 'succeeded') {
-    formats = ['html', 'markdown', 'markdown-zip', 'epub', 'pdf'];
+    formats = ['html', 'article-html', 'markdown', 'markdown-zip', 'epub', 'pdf'];
     if (c.html && detectStoredCaptureFormat(readStoredCaptureBytes(c)) === 'mhtml') formats.unshift('mhtml');
   }
   return {
