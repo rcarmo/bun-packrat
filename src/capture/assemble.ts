@@ -77,9 +77,11 @@ body {
   align-items: baseline;
 }
 .packrat-header a { color: var(--accent); word-break: break-all; }
+.packrat-header code { overflow-wrap: anywhere; word-break: break-all; }
 .packrat-header .label { font-weight: 600; }
 .packrat-content {
   max-width: var(--max-width);
+  min-width: 0;
   margin: 0 auto;
   padding: 1.5rem 1rem 4rem;
 }
@@ -111,6 +113,7 @@ body {
   font-size: 0.875em;
 }
 .packrat-content pre {
+  max-width: 100%;
   background: var(--header-bg);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -118,6 +121,7 @@ body {
   overflow-x: auto;
 }
 .packrat-content code { background: var(--header-bg); border-radius: 3px; padding: 0.1em 0.3em; }
+.packrat-content :not(pre) > code { overflow-wrap: anywhere; word-break: break-word; }
 .packrat-content pre code { background: none; padding: 0; }
 .packrat-content table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.9em; }
 .packrat-content th, .packrat-content td { border: 1px solid var(--border); padding: 0.4em 0.7em; text-align: left; }

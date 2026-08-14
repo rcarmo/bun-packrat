@@ -167,6 +167,9 @@ describe('Phase 1 pipeline proof', () => {
     expect(result).toContain('name="packrat:author" content="Jane Smith"');
     expect(result).toContain('Test Article');
     expect(result).toContain('This is the article body.');
+    expect(result).toContain('.packrat-header code { overflow-wrap: anywhere; word-break: break-all; }');
+    expect(result).toContain('.packrat-content :not(pre) > code { overflow-wrap: anywhere; word-break: break-word; }');
+    expect(result).toContain('.packrat-content pre {\n  max-width: 100%;');
     // No external dependencies
     expect(result).not.toMatch(/src="https?:\/\//);
     expect(result).not.toMatch(/href="https?:\/\/(?!.*noopener)/);
