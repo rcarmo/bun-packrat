@@ -1,12 +1,12 @@
 # bun-packrat
 
-A single-file web archive service. Each capture is a self-contained, sanitised HTML document stored in SQLite and served directly to desktop and iOS Safari. Markdown, EPUB and PDF are derived on demand.
+A single-file web archive service. Fresh captures store Chromium MHTML as the canonical snapshot in SQLite; safe standalone HTML, Markdown, EPUB and PDF are derived on demand for desktop and iOS Safari.
 
 Replaces a 35 GB / 130,000-file ArchiveBox deployment with one SQLite database and one service process.
 
 ## Status
 
-All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 104 tests passing across 11 files, including real `epubcheck` validation when installed.
+All currently actionable non-ArchiveBox requirements are implemented. Phase 3 migration and Phase 5 cutover remain deferred. 115 tests pass across 12 files, including real `epubcheck` validation when installed.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -88,7 +88,7 @@ bun run src/cli/index.ts capture https://example.com/article
 | `PACKRAT_CAPTURE_TIMEOUT_MS` | `60000` | Per-capture browser timeout (ms) |
 | `PACKRAT_MAX_CONCURRENT_CAPTURES` | `2` | Parallel capture workers |
 | `PACKRAT_MAX_PAGE_BYTES` | `20971520` | Maximum stored page size (20 MB) |
-| `PACKRAT_MAX_ASSET_BYTES` | `5242880` | Maximum asset size to inline as data: URL (5 MB) |
+| `PACKRAT_MAX_ASSET_BYTES` | `5242880` | Maximum asset size for the legacy HTML inliner (5 MB) |
 | `PACKRAT_HTML_COMPRESSION` | `none` | Stored HTML compression: `none` or `gzip` |
 | `PACKRAT_FRESHNESS_SECONDS` | `86400` | Reuse the latest successful capture for this interval; `0` disables |
 | `PACKRAT_CAPTURE_WAIT_UNTIL` | `networkidle` | Playwright readiness: `load`, `domcontentloaded`, `networkidle`, `commit` |
@@ -116,7 +116,8 @@ GET    /api/captures
                    "previousOffset": N|null, "nextOffset": N|null }
 
 GET    /api/captures/:id
-       Response: capture metadata, warnings, note, aliases, provenance and deletion impact
+       Response: capture metadata, availableFormats, stable content links, warnings,
+                 note, aliases, provenance and deletion impact
 DELETE /api/captures/:id
        Body: { "confirm": "<capture-id>" }; permanently deletes the capture
 
@@ -124,6 +125,9 @@ GET    /captures/:id/markdown
        Server-rendered Markdown; original remote images disabled until enabled
 GET    /captures/:id/markdown.raw
        Raw Markdown referencing original image URLs
+
+GET    /api/captures/:id/content/:format
+       Extract mhtml, html, markdown, markdown-zip, epub or pdf with provenance headers
 
 GET    /bookmarklet.js
        Bookmarklet payload; save as javascript:(()=>{...contents...})()
@@ -205,7 +209,7 @@ One SQLite database is the only required persistent artefact. WAL mode is enable
 
 | Table | Purpose |
 |---|---|
-| `captures` | One row per archived page: HTML BLOB, content hash, mode, status, metadata |
+| `captures` | One row per archived page: canonical MHTML or legacy HTML BLOB, content hash, mode, status, metadata |
 | `urls` | Normalised URL identity, latest capture reference |
 | `capture_aliases` | Redirect and alternate URLs associated with a capture |
 | `metadata` | Extensible key/value metadata per capture |
@@ -227,13 +231,17 @@ POST /api/captures
 JobQueue.poll()
   → claimNextJob (atomic UPDATE … RETURNING)
   → Playwright: launch → DNS/IP guard every request → navigate → scroll
-  → Snapshot complete rendered DOM → Readability extraction
-  → Remove bounded overlay chrome only for full-page fallback
-  → Asset inliner: SSRF-check and size-bound external images → data: URLs
-  → HTML sanitiser: allow-list, strip scripts/iframes/forms/handlers/remote CSS/srcset
-  → Assembler: archive header + responsive CSS + print CSS
-  → SHA-256 hash + optional gzip compression
+  → Scroll lazy content and remove bounded overlay chrome
+  → Chromium CDP Page.captureSnapshot(format=mhtml)
+  → Readability derives metadata and FTS text only
+  → SHA-256 hash over canonical MHTML + optional gzip compression
   → INSERT captures (succeeded)
+
+View/export pipeline
+  → Sniff legacy HTML or canonical MHTML
+  → Decode MHTML MIME parts and inline captured CSS/images/fonts
+  → Strip scripts, forms, frames, active attributes and unresolved resources
+  → Serve safe full-page HTML; derive article Markdown/EPUB on demand
   → finishJob (jobs table, status=succeeded)
 ```
 
@@ -241,8 +249,8 @@ JobQueue.poll()
 
 | Mode | Description |
 |---|---|
-| `article` | Readability extracted main content (preferred) |
-| `full_page` | Full rendered DOM, sanitised (Readability fallback) |
+| `article` | Legacy Readability-based canonical HTML |
+| `full_page` | Canonical Chromium MHTML for fresh captures; legacy sanitised rendered HTML remains supported |
 | `imported_singlefile` | Validated ArchiveBox SingleFile output (Phase 3) |
 | `metadata_only` | No usable body; URL and metadata stored only |
 
@@ -258,15 +266,16 @@ This prevents any external network request when viewing a capture.
 
 ### Export pipeline
 
-All exports derive from the stored HTML BLOB in SQLite. No separate asset tree is required.
+All exports derive from the canonical MHTML or legacy HTML BLOB in SQLite. No separate asset tree is required.
 
 | Format | Implementation |
 |---|---|
-| HTML | Decompress stored BLOB → stream as `text/html` |
-| Markdown view | Use stored image provenance to emit Markdown with original URLs; remote images gated per view |
-| Markdown + ZIP | Parse stored HTML with linkedom → convert to Markdown → extract data: URL images → offline ZIP |
-| EPUB 3 | Parse stored HTML → extract assets → build EPUB ZIP (pure Bun, no external tools) |
-| PDF | Write HTML to temp file → Playwright print CSS → stream PDF → delete temp file |
+| HTML | Decode canonical MHTML → safe standalone full-page HTML with captured CSS/images/fonts |
+| Canonical MHTML | Raw `multipart/related` download from the capture's `?raw=1` route |
+| Markdown view | Derive article HTML, then use stored image provenance; remote images gated per view |
+| Markdown + ZIP | Derive article HTML → convert to Markdown → extract data: URL images → offline ZIP |
+| EPUB 3 | Derive article HTML → extract assets → build EPUB ZIP (pure Bun, no external tools) |
+| PDF | Render safe full-page HTML in Playwright → stream PDF → delete temp file |
 
 ### Job queue
 
@@ -277,7 +286,7 @@ An in-process poller (`JobQueue`) polls the `jobs` table on a configurable inter
 ## Testing
 
 ```bash
-bun test                    # all 104 tests (epubcheck test skips if unavailable)
+bun test                    # all 115 tests (epubcheck test skips if unavailable)
 bun test tests/db.test.ts   # schema and database helpers
 bun test tests/url.test.ts  # URL normaliser and SSRF guard
 bun test tests/sanitize.test.ts   # HTML sanitiser (hostile-input coverage)

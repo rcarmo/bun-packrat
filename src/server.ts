@@ -17,6 +17,7 @@ import { exportHtml, slugify } from './export/html.js';
 import { exportMarkdownZip, renderRemoteMarkdown } from './export/markdown.js';
 import { renderMarkdownHtml } from './export/render-markdown.js';
 import { resolveCaptureIndexPage } from './index-page.js';
+import { detectStoredCaptureFormat, readStoredCaptureBytes, renderStoredCaptureHtml } from './capture/canonical.js';
 import { INDEX_CLIENT_SCRIPT } from './index-client.js';
 import { exportEpub } from './export/epub.js';
 import { exportPdf } from './export/pdf.js';
@@ -64,6 +65,7 @@ const server = Bun.serve({
     const detailMatch = path.match(/^\/captures\/(\d+)$/);
     if (method === 'GET' && detailMatch) {
       const id = parseInt(detailMatch[1], 10);
+      if (url.searchParams.has('raw')) return serveCaptureHtml(db, id, true);
       const acceptsHtml = (req.headers.get('accept') ?? '').includes('text/html');
       // JSON API
       if (!acceptsHtml || url.searchParams.has('meta')) {
@@ -71,7 +73,7 @@ const server = Bun.serve({
         if (!c) return json404();
         return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, id), aliases: getCaptureAliases(db, id), deleteImpact: getCaptureDeleteImpact(db, id) });
       }
-      return serveCaptureHtml(db, id, url.searchParams.has('raw'));
+      return serveCaptureHtml(db, id, false);
     }
 
     const markdownMatch = path.match(/^\/captures\/(\d+)\/markdown(\.raw)?$/);
@@ -83,6 +85,11 @@ const server = Bun.serve({
         return new Response(rendered.markdown, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } });
       }
       return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1');
+    }
+
+    const contentMatch = path.match(/^\/api\/captures\/(\d+)\/content\/(mhtml|html|markdown|markdown-zip|epub|pdf)$/);
+    if (method === 'GET' && contentMatch) {
+      return handleApiContent(db, parseInt(contentMatch[1], 10), contentMatch[2], config);
     }
 
     const recaptureMatch = path.match(/^\/api\/captures\/(\d+)\/recapture$/);
@@ -154,7 +161,7 @@ const server = Bun.serve({
           : listCaptures(db, filters);
         const total = countCaptures(db, q.trim() || null, filters);
         return Response.json({
-          captures: rows.map(summariseCapture), limit, offset, total,
+          captures: rows.map(summariseCaptureForApi), limit, offset, total,
           previousOffset: offset > 0 ? Math.max(0, offset - limit) : null,
           nextOffset: offset + rows.length < total ? offset + limit : null,
         });
@@ -170,7 +177,7 @@ const server = Bun.serve({
       if (method === 'GET') {
         const c = getCaptureById(db, id);
         if (!c) return json404();
-        return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, c.id), aliases: getCaptureAliases(db, c.id), deleteImpact: getCaptureDeleteImpact(db, id) });
+        return Response.json({ ...summariseCaptureForApi(c), tags: getCaptureTags(db, c.id), aliases: getCaptureAliases(db, c.id), deleteImpact: getCaptureDeleteImpact(db, id) });
       }
       if (method === 'DELETE') {
         const body = await safeJson(req);
@@ -294,6 +301,57 @@ async function handleExport(
   }
 }
 
+async function handleApiContent(
+  db: Database,
+  id: number,
+  format: string,
+  config: PackratConfig,
+): Promise<Response> {
+  const meta = getCaptureById(db, id);
+  if (!meta || meta.status !== 'succeeded') return json404('Capture not found or not yet succeeded');
+  const headers = contentProvenanceHeaders(meta, format);
+
+  if (format === 'mhtml') {
+    const row = getCaptureHtml(db, id);
+    if (!row?.html) return json404('Capture body not found');
+    const bytes = readStoredCaptureBytes(row);
+    if (detectStoredCaptureFormat(bytes) !== 'mhtml') {
+      return Response.json({ error: 'Canonical MHTML is unavailable for this legacy capture' }, { status: 409, headers });
+    }
+    return new Response(new Blob([Uint8Array.from(bytes).buffer]), { headers: {
+      ...headers,
+      'Content-Type': 'multipart/related',
+      'Content-Disposition': `attachment; filename="${slugify(meta.title ?? `capture-${id}`)}.mhtml"`,
+    }});
+  }
+
+  if (format === 'markdown') {
+    const rendered = await renderRemoteMarkdown(db, id);
+    if (!rendered) return json404('Capture not found or not yet succeeded');
+    return new Response(rendered.markdown, { headers: {
+      ...headers,
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Security-Policy': "default-src 'none'",
+    }});
+  }
+
+  const legacyFormat = format === 'markdown-zip' ? 'md' : format;
+  const response = await handleExport(db, id, legacyFormat, config);
+  for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+  return response;
+}
+
+function contentProvenanceHeaders(capture: CaptureRow, format: string): Record<string, string> {
+  return {
+    'Cache-Control': 'no-store',
+    'X-Packrat-Capture-Id': String(capture.id),
+    'X-Packrat-Content-Format': format,
+    'X-Packrat-Content-Hash': capture.content_hash ?? '',
+    'X-Packrat-Source-Url': encodeURI(capture.source_url),
+    'X-Packrat-Final-Url': encodeURI(capture.final_url),
+  };
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // HTML rendering
 // ────────────────────────────────────────────────────────────────────────────
@@ -302,18 +360,21 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
   const row = getCaptureHtml(db, id);
   if (!row?.html) return new Response('Capture not found', { status: 404 });
 
-  let html: Buffer;
-  if (row.compression === 'gzip') {
-    html = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
-  } else {
-    html = Buffer.from(row.html as unknown as Uint8Array);
+  const storedBytes = readStoredCaptureBytes(row);
+  if (raw && detectStoredCaptureFormat(storedBytes) === 'mhtml') {
+    return new Response(new Blob([Uint8Array.from(storedBytes).buffer]), { headers: {
+      'Content-Type': 'multipart/related',
+      'Content-Disposition': `attachment; filename="capture-${id}.mhtml"`,
+      'X-Content-Type-Options': 'nosniff',
+    }});
   }
 
+  let html = renderStoredCaptureHtml(row);
   if (!raw) {
-    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Archived HTML</strong> · <a style="color:#9cf" href="/captures/${id}/markdown">Markdown</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Raw archive</a></nav>`;
-    html = Buffer.from(html.toString('utf-8').replace(/<body([^>]*)>/i, `<body$1>${toolbar}`));
+    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Full page</strong> · <a style="color:#9cf" href="/captures/${id}/markdown">Article</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Canonical MHTML</a></nav>`;
+    html = html.replace(/<body([^>]*)>/i, `<body$1>${toolbar}`);
   }
-  return new Response(new Blob([Uint8Array.from(html).buffer]), {
+  return new Response(html, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Security-Policy': csp(),
@@ -538,6 +599,23 @@ function summariseCapture(c: any) {
   };
 }
 
+function summariseCaptureForApi(c: any) {
+  const summary = summariseCapture(c);
+  let formats: string[] = [];
+  if (c.status === 'succeeded') {
+    formats = ['html', 'markdown', 'markdown-zip', 'epub', 'pdf'];
+    if (c.html && detectStoredCaptureFormat(readStoredCaptureBytes(c)) === 'mhtml') formats.unshift('mhtml');
+  }
+  return {
+    ...summary,
+    availableFormats: formats,
+    links: {
+      metadata: `/api/captures/${c.id}`,
+      content: Object.fromEntries(formats.map((format) => [format, `/api/captures/${c.id}/content/${format}`])),
+    },
+  };
+}
+
 function captureQueryOptions(url: URL, limit: number, offset: number) {
   const sortRaw = url.searchParams.get('sort');
   const sort = sortRaw === 'oldest' || sortRaw === 'relevance' || sortRaw === 'newest'
@@ -558,7 +636,7 @@ function captureQueryOptions(url: URL, limit: number, offset: number) {
 function renderMarkdownView(id: number, title: string, markdown: string, remoteImages: boolean): Response {
   const content = renderMarkdownHtml(markdown, remoteImages);
   const enableHref = `/captures/${id}/markdown?remote=1`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:var(--notice-bg);color:var(--notice-fg);border:1px solid var(--notice-border);border-radius:4px}.warning a{color:inherit;font-weight:700}img{max-width:100%;height:auto}main{min-width:0}pre{max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}.table-scroll{max-width:100%;margin:1.5rem 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px}table{width:100%;min-width:36rem;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.55rem .7rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th:last-child,td:last-child{border-right:0}tbody tr:last-child td{border-bottom:0}th{background:var(--surface);font-weight:600}tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 55%,transparent)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a></nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:var(--notice-bg);color:var(--notice-fg);border:1px solid var(--notice-border);border-radius:4px}.warning a{color:inherit;font-weight:700}img{max-width:100%;height:auto}main{min-width:0}pre{max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}p,li,blockquote,figcaption{overflow-wrap:anywhere;word-break:break-word}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}.table-scroll{max-width:100%;margin:1.5rem 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px}table{width:100%;min-width:36rem;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.55rem .7rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th:last-child,td:last-child{border-right:0}tbody tr:last-child td{border-bottom:0}th{background:var(--surface);font-weight:600}tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 55%,transparent)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a></nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
   return new Response(html, { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Content-Security-Policy': remoteImages ? "default-src 'none'; style-src 'unsafe-inline'; img-src https: http:; base-uri 'none'; frame-ancestors 'none'" : "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; frame-ancestors 'none'",

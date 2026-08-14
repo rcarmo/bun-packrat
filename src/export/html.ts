@@ -1,10 +1,11 @@
 /**
  * bun-packrat — HTML export helper
- * Returns the stored capture HTML with an optional export toolbar injected.
+ * Returns a safe, standalone HTML rendering derived from the canonical capture.
  */
 
 import type { Database } from 'bun:sqlite';
 import { getCaptureHtml, getCaptureById } from '../db/index.js';
+import { renderStoredCaptureHtml } from '../capture/canonical.js';
 
 export interface HtmlExportResult {
   html: Uint8Array;
@@ -22,12 +23,7 @@ export async function exportHtml(
   const row = getCaptureHtml(db, captureId);
   if (!row?.html) return null;
 
-  let htmlBytes: Buffer;
-  if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
-  } else {
-    htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
-  }
+  const htmlBytes = Buffer.from(renderStoredCaptureHtml(row), 'utf8');
 
   const filename = slugify(meta.title ?? `capture-${captureId}`) + '.html';
 

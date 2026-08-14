@@ -2,7 +2,7 @@
 
 Project path: `/workspace/projects/bun-packrat`  
 PRD: `docs/PRD.md`  
-Status: **All actionable non-ArchiveBox scope complete — 104 tests passing across 11 files; Phases 3 and 5 deferred**
+Status: **Canonical MHTML capture rework in validation; ArchiveBox import and cutover are outside this change**
 
 ---
 
@@ -18,11 +18,11 @@ Status: **All actionable non-ArchiveBox scope complete — 104 tests passing acr
 | Core types | `src/types.ts` | ✅ |
 | Config (env-driven) | `src/config.ts` | ✅ |
 | URL normaliser + SSRF guard | `src/capture/url.ts` | ✅ |
-| HTML sanitiser (allow-list) | `src/capture/sanitize.ts` | ✅ |
-| Asset inliner (data: URLs) | `src/capture/assets.ts` | ✅ |
-| Readability extractor | `src/capture/extract.ts` | ✅ |
-| Playwright capture pipeline | `src/capture/pipeline.ts` | ✅ |
-| Self-contained HTML assembler | `src/capture/assemble.ts` | ✅ |
+| Legacy/article HTML sanitiser | `src/capture/sanitize.ts` | ✅ |
+| Legacy asset inliner and image provenance | `src/capture/assets.ts` | ✅ |
+| Readability derived-view extractor | `src/capture/extract.ts` | ✅ |
+| Playwright canonical MHTML pipeline | `src/capture/pipeline.ts` | ✅ |
+| MHTML decoder and safe full-page renderer | `src/capture/canonical.ts` | ✅ |
 | HTTP server (serve + submit) | `src/server.ts` | ✅ |
 | CLI entry point | `src/cli/index.ts` | ✅ |
 | Unit tests: schema | `tests/db.test.ts` | ✅ |
@@ -106,11 +106,12 @@ bun-packrat/
 │   └── PRD.md                         # requirements baseline
 ├── src/
 │   ├── capture/
-│   │   ├── assemble.ts                # archive header + CSS → self-contained HTML
-│   │   ├── assets.ts                  # fetch external assets → data: URLs
-│   │   ├── extract.ts                 # Mozilla Readability extraction
+│   │   ├── assemble.ts                # legacy HTML archive shell
+│   │   ├── assets.ts                  # legacy inlining + image provenance
+│   │   ├── canonical.ts               # MHTML detection, decoding and safe rendering
+│   │   ├── extract.ts                 # Mozilla Readability derived extraction
 │   │   ├── overlays.ts                # conservative overlay cleanup
-│   │   ├── pipeline.ts                # Playwright orchestration
+│   │   ├── pipeline.ts                # Playwright + CDP MHTML orchestration
 │   │   ├── sanitize.ts                # allow-list HTML sanitiser
 │   │   └── url.ts                     # URL normalisation + SSRF guard
 │   ├── cli/

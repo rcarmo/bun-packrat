@@ -17,6 +17,7 @@ import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { getCaptureById, getCaptureHtml, getCaptureImageSources } from '../db/index.js';
 import { slugify } from './html.js';
+import { deriveStoredArticleHtml } from '../capture/canonical.js';
 
 export interface MarkdownExportResult {
   zip: Uint8Array;
@@ -283,11 +284,9 @@ export async function renderRemoteMarkdown(db: Database, captureId: number): Pro
   if (!meta || meta.status !== 'succeeded') return null;
   const row = getCaptureHtml(db, captureId);
   if (!row?.html) return null;
-  const htmlBytes = row.compression === 'gzip'
-    ? Buffer.from(Bun.gunzipSync(Buffer.from(row.html)))
-    : Buffer.from(row.html);
+  const articleHtml = deriveStoredArticleHtml(row, meta.final_url);
   const imageSources = getCaptureImageSources(db, captureId);
-  const { markdown } = htmlToMarkdown(htmlBytes.toString('utf-8'), { remoteImages: imageSources });
+  const { markdown } = htmlToMarkdown(articleHtml, { remoteImages: imageSources });
   return { markdown, title: meta.title ?? `capture-${captureId}` };
 }
 
@@ -301,15 +300,8 @@ export async function exportMarkdownZip(
   const row = getCaptureHtml(db, captureId);
   if (!row?.html) return null;
 
-  let htmlBytes: Buffer;
-  if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
-  } else {
-    htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
-  }
-
-  const htmlStr = htmlBytes.toString('utf-8');
-  const { markdown, assets } = htmlToMarkdown(htmlStr);
+  const articleHtml = deriveStoredArticleHtml(row, meta.final_url);
+  const { markdown, assets } = htmlToMarkdown(articleHtml);
 
   const enc = new TextEncoder();
 

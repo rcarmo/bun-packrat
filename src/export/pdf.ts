@@ -14,6 +14,7 @@ import type { Database } from 'bun:sqlite';
 import { getCaptureById, getCaptureHtml } from '../db/index.js';
 import { slugify } from './html.js';
 import { findChromiumExecutable } from '../capture/pipeline.js';
+import { renderStoredCaptureHtml } from '../capture/canonical.js';
 
 export interface PdfExportResult {
   pdf: Uint8Array;
@@ -32,12 +33,7 @@ export async function exportPdf(
   const row = getCaptureHtml(db, captureId);
   if (!row?.html) return null;
 
-  let htmlBytes: Buffer;
-  if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
-  } else {
-    htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
-  }
+  const htmlBytes = Buffer.from(renderStoredCaptureHtml(row), 'utf8');
 
   // Write HTML to a temp file for Playwright to load via file:// URL
   const tmpDir = join(tmpdir(), 'packrat-pdf');

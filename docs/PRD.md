@@ -1,14 +1,14 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-12T21:38:24Z
+updated: 2026-08-14T11:25:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
 
 # Single-File Web Archive PRD
 
-A Bun service will replace ArchiveBox with a searchable web archive whose only persistent application store is SQLite. Each successful capture is a self-contained, sanitised HTML document stored in the database and served directly to browsers, including Safari on iOS. Markdown, EPUB and PDF are derived on demand.
+A Bun service will replace ArchiveBox with a searchable web archive whose only persistent application store is SQLite. Each successful fresh capture stores Chromium's complete rendered page and loaded resources as canonical MHTML in the database. The service derives safe standalone HTML for browsers, including Safari on iOS, and derives article reading mode, Markdown, EPUB and PDF on demand.
 
 ## Problem
 
@@ -18,13 +18,13 @@ The replacement needs one useful representation of each page, one database to ba
 
 ## Goals
 
-1. Capture a URL as one self-contained HTML document after browser rendering.
+1. Capture a URL after browser rendering and store Chromium MHTML as the canonical page snapshot.
 2. Open archived pages through ordinary HTTP in desktop and iOS Safari without a browser extension or specialist archive viewer.
-3. Keep all persistent application data in one SQLite database, including captured HTML and embedded or derived metadata.
+3. Keep all persistent application data in one SQLite database, including canonical MHTML and derived metadata.
 4. Import and convert the existing ArchiveBox collection at scale, with resumable jobs and an auditable result for every source snapshot.
 5. Search titles, URLs, metadata and extracted article text with SQLite FTS5.
 6. Export any successful capture as:
-   - the canonical self-contained HTML;
+   - safe self-contained HTML derived from the canonical MHTML;
    - Markdown plus an asset directory or ZIP;
    - EPUB;
    - PDF generated on demand.
@@ -34,7 +34,7 @@ The replacement needs one useful representation of each page, one database to ba
 ## Non-goals
 
 - Reproduce every ArchiveBox extractor or preserve interactive application behaviour.
-- Use WARC, WACZ or MHTML as the primary stored representation.
+- Use WARC or WACZ as the primary stored representation.
 - Run Python, Node.js, PostgreSQL, Redis, Elasticsearch or Sonic services.
 - Store rendered PDFs, screenshots or duplicate export files permanently.
 - Circumvent authentication, paywalls, CAPTCHAs or anti-bot controls.
@@ -51,7 +51,7 @@ The initial deployment has one trusted user on the local network.
 2. The service normalises the URL and checks for a recent matching capture.
 3. A worker opens the page in Chromium through Playwright.
 4. The capture pipeline waits for a configurable readiness condition, dismisses known overlays, scrolls lazy content into view and records the final URL.
-5. The service extracts the main document, downloads required assets, sanitises active content, inlines assets and writes one database transaction.
+5. Chromium serialises the complete rendered DOM and loaded resources as MHTML. The service stores it in one database transaction and extracts article metadata and search text as derived data.
 6. The archive page becomes available at a stable local URL.
 
 ### Read on iOS
@@ -63,7 +63,7 @@ The initial deployment has one trusted user on the local network.
 
 ### Export content
 
-The user chooses HTML, Markdown, EPUB or PDF from an archive entry. HTML streams directly from SQLite. Other formats are produced from the stored HTML and metadata, then streamed to the caller. Temporary export files are removed after delivery.
+The user chooses HTML, Markdown, EPUB or PDF from an archive entry. HTML is rendered from canonical MHTML; Markdown and EPUB use a derived article document; PDF prints the safe full-page HTML. Temporary export files are removed after delivery.
 
 ### Read as Markdown
 
@@ -73,7 +73,7 @@ The Markdown mode converts the captured semantic article content to Markdown and
 
 Images in Markdown mode reference their original absolute HTTP or HTTPS URLs instead of embedded `data:` URLs or extracted local assets. To support this view:
 
-- the capture pipeline records the original resolved URL for every image before replacing its `src` with a `data:` URL;
+- the capture pipeline records the original resolved URL for every derived-article image alongside the canonical MHTML snapshot;
 - the original image URL mapping is stored in SQLite as capture metadata;
 - Markdown image syntax uses the original URL: `![alt text](https://original.example/image.jpg)`;
 - `srcset` candidates resolve to one preferred original image URL, favouring the largest suitable candidate when dimensions are available;
@@ -107,44 +107,44 @@ The server can return either rendered Markdown HTML or raw Markdown from the sam
 
 ## Product requirements
 
-### Capture format
+### Canonical capture format
 
-The canonical capture is a complete HTML document stored as UTF-8 text or a compressed SQLite BLOB. It must contain:
+Every successful fresh capture stores Chromium MHTML as UTF-8 text or a compressed SQLite BLOB. The MHTML is the source of record and contains the complete rendered DOM plus every resource loaded into the snapshot by Chromium. Packrat does not replace it with Readability output.
 
-- the cleaned document body;
-- essential CSS;
-- images and small required fonts as `data:` URLs;
-- a responsive screen stylesheet;
-- an `@media print` stylesheet;
-- original URL, final URL and capture timestamp;
-- title, author, site name and publication date where detectable;
-- the content hash and capture-tool version;
-- an unobtrusive archive header with source and capture details.
+The canonical BLOB records:
 
-The capture must remove or disable:
+- the complete rendered document body and page chrome after bounded overlay dismissal;
+- Chromium's captured stylesheets;
+- images, fonts and other loaded resources included by `Page.captureSnapshot`;
+- original and final URL provenance in MIME headers and capture metadata;
+- a reproducible hash over the uncompressed MHTML;
+- the capture-tool version.
+
+The canonical MHTML is not served as HTML. The raw archive route downloads it as `multipart/related`. The normal capture route derives safe standalone HTML by decoding MIME parts, inlining captured stylesheets, images and fonts, and removing active content. This renderer must remove or disable:
 
 - scripts and event-handler attributes;
 - forms and active controls that submit data;
-- trackers and invisible pixels;
-- cookie, newsletter and modal overlays;
-- external stylesheets and ordinary remote asset dependencies;
+- frames, plug-ins and executable embedded content;
+- unresolved remote resource dependencies;
 - automatic media playback;
 - service workers and refresh redirects.
 
-Links to other pages remain ordinary absolute links. A setting may rewrite links to matching local captures when one exists, but the stored source URL remains available.
+Derived HTML preserves author CSS when all resource URLs resolve to safe captured `data:` URLs. Links to other pages remain ordinary absolute HTTP or HTTPS links. Opening a derived full-page capture must not cause external requests.
 
-### Page extraction
+Existing legacy HTML captures remain readable through content sniffing until they are recaptured or imported.
 
-The service should use Mozilla Readability or an equivalent deterministic DOM extractor for article-like pages. If extraction fails or removes most meaningful content, the service stores a sanitised full-page capture and marks the extraction mode accordingly.
+### Page extraction and derived views
 
-Each capture records one of these modes:
+Mozilla Readability or an equivalent deterministic DOM extractor supplies title, author, publication metadata, article text for FTS5, Markdown reading mode and article-oriented exports. Extraction never replaces the canonical full-page MHTML.
 
-- `article`: Readability-style main-content extraction;
-- `full_page`: sanitised rendered document;
+Fresh captures record `full_page` mode. Other modes describe legacy or imported records:
+
+- `article`: legacy Readability-based canonical HTML;
+- `full_page`: canonical Chromium MHTML for fresh captures, or legacy sanitised rendered HTML;
 - `imported_singlefile`: accepted ArchiveBox SingleFile output after validation and normalisation;
 - `metadata_only`: no usable page body was available.
 
-The UI must display the mode and any capture warnings.
+The UI must display the mode and any capture warnings. A failed Readability derivation does not fail a valid MHTML capture; article views then derive from the safe full-page HTML.
 
 ### SQLite-only persistence
 
@@ -152,7 +152,7 @@ One SQLite database is the only required persistent application artefact. The se
 
 SQLite stores:
 
-- captures and canonical HTML;
+- captures and canonical MHTML or legacy canonical HTML;
 - normalised URLs and aliases;
 - extracted plain text;
 - metadata and headers needed for display and export;
@@ -171,7 +171,7 @@ Use WAL mode during normal operation. Backups must use SQLite's online backup AP
 
 | Table | Purpose |
 |---|---|
-| `captures` | One row per archived representation, including HTML BLOB, hashes, mode and status |
+| `captures` | One row per archived representation, including canonical MHTML or legacy HTML BLOB, hashes, mode and status |
 | `urls` | Normalised URL identity, original spelling, canonical URL and latest capture |
 | `capture_aliases` | Redirects and alternate URLs associated with a capture |
 | `metadata` | Extensible name/value metadata not promoted to capture columns |
@@ -183,7 +183,7 @@ Use WAL mode during normal operation. Backups must use SQLite's online backup AP
 | `captures_fts` | FTS5 index over title, URL, site, author and extracted text |
 | `schema_migrations` | Applied database migrations |
 
-Large HTML bodies should be compressed before storage if tests show a material size reduction without unacceptable read latency. The compression algorithm and uncompressed SHA-256 belong in each capture row. The first implementation should compare SQLite-native raw BLOB storage with gzip and zstd before selecting a default.
+Large canonical bodies should be compressed before storage if tests show a material size reduction without unacceptable read latency. The compression algorithm and uncompressed SHA-256 belong in each capture row. The first implementation should compare SQLite-native raw BLOB storage with gzip and zstd before selecting a default.
 
 ### Search and browsing
 
@@ -229,7 +229,9 @@ POST   /api/captures              queue one URL
 POST   /api/import/archivebox     start or resume an import
 GET    /api/jobs/:id              inspect progress and errors
 GET    /api/captures              search, filter, sort and page captures
-GET    /api/captures/:id          retrieve metadata
+GET    /api/captures/:id          retrieve metadata and available content formats
+GET    /api/captures/:id/content/:format
+                                  extract mhtml|html|markdown|markdown-zip|epub|pdf
 DELETE /api/captures/:id          delete one capture after explicit confirmation
 GET    /captures/:id              view archived HTML
 GET    /captures/:id/markdown     view server-rendered Markdown
@@ -253,7 +255,22 @@ archive verify [--all]
 archive backup <destination.sqlite>
 ```
 
-`GET /api/captures` accepts `q`, `url`, `domain`, `title`, `tag`, `dateFrom`, `dateTo`, `status`, `mode`, `sort`, `limit` and `offset`. The response contains the capture rows and paging metadata defined above.
+`GET /api/captures` accepts `q`, `url`, `domain`, `title`, `tag`, `dateFrom`, `dateTo`, `status`, `mode`, `sort`, `limit` and `offset`. The response contains capture metadata, `availableFormats`, stable metadata/content URLs, and the paging metadata defined above. This endpoint is the agent-facing search API; it does not require clients to parse the HTML index.
+
+`GET /api/captures/:id/content/:format` is the agent-facing extraction API:
+
+| Format | Content type | Semantics |
+|---|---|---|
+| `mhtml` | `multipart/related` | Canonical Chromium MHTML bytes. Legacy HTML captures return `409 Conflict` because no canonical MHTML exists. |
+| `html` | `text/html` | Safe standalone full-page HTML derived from canonical MHTML, or legacy canonical HTML. |
+| `markdown` | `text/markdown` | Article Markdown with original HTTP or HTTPS image URLs. It can disclose those origins only when a client subsequently loads them. |
+| `markdown-zip` | `application/zip` | Offline Markdown and local assets. |
+| `epub` | `application/epub+zip` | On-demand EPUB 3 article export. |
+| `pdf` | `application/pdf` | On-demand PDF of the safe full-page HTML. |
+
+Successful extraction responses include `X-Packrat-Capture-Id`, `X-Packrat-Content-Format`, `X-Packrat-Content-Hash`, `X-Packrat-Source-Url` and `X-Packrat-Final-Url`. Responses use `Cache-Control: no-store`. Binary and HTML responses use `Content-Disposition: attachment`; plain Markdown may be consumed inline. Unknown formats return `404`; missing or unsuccessful captures return `404`; a requested canonical format unavailable for a legacy capture returns `409`.
+
+The API uses the same authentication requirement as the web UI. Agents authenticate with HTTP Basic authentication unless the operator explicitly sets `PACKRAT_AUTH_DISABLED=1`. Search and extraction are read-only and do not require same-origin mutation headers.
 
 Import, capture and delete commands must support JSON output for automation.
 
@@ -363,11 +380,11 @@ ArchiveBox remains read-only and available until reconciliation passes and a bac
 
 ### HTML
 
-The HTML export is byte-equivalent to the uncompressed canonical document, apart from an optional export-time archive toolbar. It must open offline in current Safari, Chromium and Firefox.
+The HTML export is a deterministic, safe standalone rendering derived from canonical MHTML. It includes captured author CSS and captured images and fonts as `data:` URLs, removes active content and unresolved remote resources, and opens offline in current Safari, Chromium and Firefox. Legacy canonical HTML exports remain byte-equivalent to their stored uncompressed document.
 
 ### Markdown plus assets
 
-The downloadable Markdown ZIP remains an offline export and differs from the Markdown reading mode. The exporter parses the stored HTML DOM, extracts embedded data URLs into an `assets/` directory, converts semantic content to Markdown and writes relative asset links. It returns a ZIP containing:
+The downloadable Markdown ZIP remains an offline export and differs from the Markdown reading mode. The exporter derives an article document from canonical MHTML, extracts embedded data URLs into an `assets/` directory, converts semantic content to Markdown and writes relative asset links. It returns a ZIP containing:
 
 ```text
 article.md
@@ -449,7 +466,7 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### Fresh capture
 
-- [x] A submitted article produces one self-contained HTML document in SQLite.
+- [x] A submitted URL stores one canonical Chromium MHTML snapshot in SQLite.
 - [x] The archived page opens through Safari on iPhone or iPad and desktop Safari, Chromium and Firefox.
 - [x] Opening the archived page causes no unapproved network requests.
 - [x] The source URL, final URL and capture time are visible.
@@ -475,7 +492,7 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### Markdown reading mode
 
-- [x] Every newly captured image records its original resolved HTTP or HTTPS URL before inlining.
+- [x] Every newly captured derived-article image records its original resolved HTTP or HTTPS URL alongside the canonical snapshot.
 - [x] Capture details can switch between archived HTML and server-rendered Markdown.
 - [x] Raw Markdown references original image URLs and contains no embedded data URLs or local asset paths.
 - [x] Remote images remain disabled until the user accepts the network and privacy warning for that view.
@@ -501,7 +518,7 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### Exports
 
-- [x] HTML exports open offline.
+- [x] HTML exports derived from canonical MHTML open offline.
 - [x] Markdown ZIPs contain local relative asset references only.
 - [x] EPUB 3 exports pass `epubcheck`; Apple Books device validation remains an operational release check.
 - [x] PDF generation works on demand and leaves no persistent PDF.

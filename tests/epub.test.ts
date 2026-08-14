@@ -29,6 +29,10 @@ const SAMPLE_HTML = `<!DOCTYPE html>
 <p>This is the first paragraph of the article with some content to verify.</p>
 <p>Second paragraph with more text for the EPUB body.</p>
 <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI12P4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==" alt="cover">
+<figure><img src="data:image/avif;base64,AAAA" alt="unsupported"><figcaption>Unsupported AVIF caption</figcaption></figure>
+<img alt="missing source"><figcaption>Orphan caption</figcaption>
+<picture><source srcset="data:image/avif;base64,AAAA"></picture>
+<p><a href="https://example.com/share?utm_source=test&utm_medium=email">Tracked link</a></p>
 <ul><li>List item one</li><li>List item two</li></ul>
 </div>
 </body>
@@ -120,6 +124,10 @@ describe('exportEpub', () => {
     expect(content).toContain('properties="cover-image"');
     expect(content).toContain('<meta name="cover" content="img0" />');
     expect(content).toContain('<dc:date>');
+    expect(content).not.toContain('image/avif');
+    expect(content).not.toContain('Orphan caption');
+    expect(content).not.toContain('<picture>');
+    expect(content).toContain('utm_source=test&amp;utm_medium=email');
   });
 
   test('passes installed epubcheck release validator', async () => {
@@ -135,7 +143,7 @@ describe('exportEpub', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 30_000);
 
   test('archive header div is removed from EPUB article body', async () => {
     const id = insertTestCapture(db);

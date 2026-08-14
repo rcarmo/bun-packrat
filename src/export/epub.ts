@@ -17,6 +17,7 @@ import { parseHTML } from 'linkedom';
 import type { Database } from 'bun:sqlite';
 import { getCaptureById, getCaptureHtml } from '../db/index.js';
 import { slugify } from './html.js';
+import { deriveStoredArticleHtml } from '../capture/canonical.js';
 
 export interface EpubExportResult {
   epub: Uint8Array;
@@ -130,8 +131,11 @@ function esc(s: string): string {
 }
 
 function normaliseToXhtml(fragment: string): string {
-  // Self-close void HTML elements for XHTML compliance
-  return fragment.replace(
+  // linkedom serialises HTML attributes with literal ampersands. XHTML needs
+  // those escaped, while existing entities must remain intact.
+  const escaped = fragment.replace(/&(?!(?:#\d+|#x[0-9a-f]+|[a-z][a-z0-9]+);)/gi, '&amp;');
+  // Self-close void HTML elements for XHTML compliance.
+  return escaped.replace(
     /<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)(\s[^>]*?)?>/gi,
     (match, tag, attrs = '') => {
       if (/\/\s*>$/.test(match)) return match;
@@ -174,30 +178,39 @@ function parseStoredHtml(htmlStr: string): ParsedCapture {
   const assets: EpubAsset[] = [];
   let assetIdx = 0;
 
-  // Extract data: URL images → EPUB assets, rewrite to relative paths
-  bodySource.querySelectorAll('img[src]').forEach((img: any) => {
+  // Extract EPUB-core data: URL images and remove unsupported or unresolved
+  // images. AVIF remains valid in browser HTML but EPUB 3.2 requires a
+  // fallback, so it is omitted instead of creating an invalid publication.
+  bodySource.querySelectorAll('img').forEach((img: any) => {
     const src = img.getAttribute('src') ?? '';
-    if (!src.startsWith('data:')) return;
-
-    const m = src.match(/^data:([^;]+);base64,(.+)$/s);
-    if (!m) return;
-
-    const mime = m[1].toLowerCase();
+    const m = src.match(/^data:(image\/(?:gif|jpeg|jpg|png|svg\+xml));base64,(.+)$/s);
+    if (!m) {
+      img.remove();
+      return;
+    }
+    const mime = m[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : m[1].toLowerCase();
     const bytes = new Uint8Array(Buffer.from(m[2], 'base64'));
     const ext = mimeToExt(mime);
     const id = `img${assetIdx}`;
     const href = `assets/${id}.${ext}`;
-
     assets.push({ id, href, mediaType: mime, bytes });
     img.setAttribute('src', href);
     assetIdx++;
+  });
+
+  // A removed image can leave an orphan figcaption, which EPUB XHTML forbids.
+  bodySource.querySelectorAll('figcaption').forEach((caption: any) => {
+    if ((caption.parentNode?.tagName ?? '').toLowerCase() !== 'figure') caption.remove();
+  });
+  bodySource.querySelectorAll('picture').forEach((picture: any) => {
+    if (!picture.querySelector('img')) picture.remove();
   });
 
   // Remove archive header from EPUB body
   bodySource.querySelector?.('.packrat-header')?.remove?.();
 
   const bodyHtml = bodySource.innerHTML ?? '';
-  const coverAssetId = assets.find((asset) => asset.mediaType !== 'image/svg+xml')?.id ?? null;
+  const coverAssetId = assets.find((asset) => ['image/jpeg', 'image/png', 'image/gif'].includes(asset.mediaType))?.id ?? null;
 
   return { title, author, lang, bodyHtml, assets, coverAssetId };
 }
@@ -306,14 +319,8 @@ export async function exportEpub(
   const row = getCaptureHtml(db, captureId);
   if (!row?.html) return null;
 
-  let htmlBytes: Buffer;
-  if (row.compression === 'gzip') {
-    htmlBytes = Buffer.from(Bun.gunzipSync(Buffer.from(row.html)));
-  } else {
-    htmlBytes = Buffer.from(row.html as unknown as Uint8Array);
-  }
-
-  const parsed = parseStoredHtml(htmlBytes.toString('utf-8'));
+  const articleHtml = deriveStoredArticleHtml(row, meta.final_url);
+  const parsed = parseStoredHtml(articleHtml);
   const contentHash = createHash('sha256').update(parsed.bodyHtml).digest('hex');
   const identifier = `${meta.source_url}#${contentHash.slice(0, 12)}`;
   const enc = new TextEncoder();

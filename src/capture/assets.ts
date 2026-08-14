@@ -37,6 +37,33 @@ export interface InlineAssetsResult {
   imageSources: ImageSourceRecord[];
 }
 
+/** Collect deterministic original image provenance without fetching assets. */
+export function collectImageSources(html: string, baseUrl: string): { imageSources: ImageSourceRecord[]; warnings: string[] } {
+  const { document } = parseHTML(html);
+  const imageSources: ImageSourceRecord[] = [];
+  const warnings: string[] = [];
+  const resolve = (src: string): string | null => {
+    try { return new URL(src, baseUrl).toString(); } catch { return null; }
+  };
+  document.querySelectorAll('img').forEach((element, order) => {
+    const width = Number(element.getAttribute('width') ?? NaN);
+    const height = Number(element.getAttribute('height') ?? NaN);
+    const src = chooseImageSource(element, Number.isFinite(width) ? width : null);
+    const resolved = src ? resolve(src) : null;
+    const originalUrl = resolved?.startsWith('http://') || resolved?.startsWith('https://') ? resolved : null;
+    imageSources.push({
+      order,
+      originalUrl,
+      alt: element.getAttribute('alt') ?? '',
+      title: element.getAttribute('title'),
+      width: Number.isFinite(width) ? width : null,
+      height: Number.isFinite(height) ? height : null,
+    });
+    if (!originalUrl) warnings.push(`Image ${order + 1} has no valid original URL; Markdown view will use alt text`);
+  });
+  return { imageSources, warnings };
+}
+
 /**
  * Inline external assets in-place on a document parsed from `html`.
  * Returns the serialised HTML with all fetchable assets replaced by data: URLs.

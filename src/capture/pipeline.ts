@@ -1,8 +1,8 @@
 /**
  * bun-packrat — Playwright capture pipeline
  *
- * Orchestrates browser launch → page load → content extraction →
- * asset inlining → sanitisation → assembly → storage.
+ * Orchestrates browser launch → page load → canonical Chromium MHTML snapshot
+ * → derived extraction metadata → storage.
  */
 
 import { chromium } from 'playwright';
@@ -11,9 +11,7 @@ import type { Database } from 'bun:sqlite';
 import type { PackratConfig, CaptureResult } from '../types.js';
 import { normaliseUrl, guardSsrfResolved, UrlValidationError } from './url.js';
 import { extractContent } from './extract.js';
-import { sanitizeHtml } from './sanitize.js';
-import { inlineAssets } from './assets.js';
-import { assembleHtml } from './assemble.js';
+import { collectImageSources } from './assets.js';
 import { DISMISS_OVERLAYS_JS } from './overlays.js';
 import {
   getOrCreateUrl,
@@ -89,7 +87,7 @@ export async function capturePage(
     excerpt: null,
     lang: null,
     extracted_text: null,
-    mode: 'article',
+    mode: 'full_page',
     status: 'pending',
     capture_tool: TOOL_VERSION,
     warnings: null,
@@ -160,84 +158,38 @@ export async function capturePage(
 
     if (config.captureSettlingMs > 0) await page.waitForTimeout(config.captureSettlingMs);
 
-    // 5. Scroll for lazy content, then snapshot the rendered DOM before any
-    // overlay cleanup. Extraction uses this complete snapshot so an imperfect
-    // overlay heuristic cannot delete article content.
+    // 5. Scroll lazy content into view and dismiss bounded overlays before the
+    // canonical snapshot. MHTML keeps Chromium's rendered DOM and loaded
+    // resources together without a second asset-fetching pass.
     await scrollPage(page);
-    const renderedHtml = await page.content();
     await page.evaluate(DISMISS_OVERLAYS_JS).catch(() => {});
-    const cleanedFullPageHtml = await page.content();
-
-    // 6. Close the browser context once both snapshots are available.
-
+    const renderedHtml = await page.content();
+    const cdp = await context.newCDPSession(page);
+    const snapshot = await cdp.send('Page.captureSnapshot', { format: 'mhtml' }) as { data: string };
     await context.close();
 
-    if (Buffer.byteLength(renderedHtml, 'utf-8') > config.maxPageSizeBytes * 2) {
-      throw new Error('Rendered page exceeds the configured capture size budget');
+    const canonicalBytes = Buffer.from(snapshot.data, 'utf-8');
+    if (canonicalBytes.byteLength > config.maxPageSizeBytes) {
+      throw new Error(`Captured MHTML exceeds max size (${canonicalBytes.byteLength} > ${config.maxPageSizeBytes} bytes)`);
     }
 
-    // 7. Extract article content
+    // 6. Readability supplies derived metadata and search text. It never
+    // replaces the canonical full-page snapshot.
     const extracted = extractContent(renderedHtml, finalUrl);
     warnings.push(...extracted.extractionWarnings);
     const renderedTextLength = extracted.extractedText?.length ?? 0;
-    if (extracted.mode === 'full_page') {
-      warnings.push('Readability extraction failed or yielded too little text; using full-page mode');
-    }
+    if (extracted.mode === 'full_page') warnings.push('Readability yielded no article; derived views use the full rendered page');
+    const { imageSources, warnings: imageWarnings } = collectImageSources(extracted.articleHtml ?? renderedHtml, finalUrl);
+    warnings.push(...imageWarnings);
 
-    // 8. Inline external assets
-    const { html: htmlWithAssets, warnings: assetWarnings, imageSources } = await inlineAssets(
-      extracted.articleHtml ?? cleanedFullPageHtml,
-      {
-        baseUrl: finalUrl,
-        maxAssetBytes: config.maxAssetSizeBytes,
-      },
-    );
-    warnings.push(...assetWarnings);
-
-    // 9. Sanitise
-    const { html: sanitisedHtml, warnings: sanitiseWarnings } = sanitizeHtml(htmlWithAssets);
-    warnings.push(...sanitiseWarnings);
-    if (extracted.imageRecovery) {
-      warnings.push(formatImageRecoveryWarning(extracted.imageRecovery.readabilityImages, sanitisedHtml));
-    }
-
-    // 10. Assemble final document. Embed a reproducible hash of the sanitised
-    // body; the database content_hash below covers the complete document.
-    const capturedAt = new Date().toISOString();
-    const bodyContentHash = createHash('sha256').update(sanitisedHtml, 'utf-8').digest('hex');
-    const finalHtml = assembleHtml(sanitisedHtml, {
-      title: extracted.title,
-      author: extracted.author,
-      siteName: extracted.siteName,
-      publishedAt: extracted.publishedAt,
-      lang: extracted.lang,
-      sourceUrl: rawUrl,
-      finalUrl,
-      capturedAt,
-      captureId,
-      mode: extracted.mode,
-      captureTool: TOOL_VERSION,
-      bodyContentHash,
-    });
-
-    // Size guard: fail explicitly rather than storing an oversized body.
-    const htmlBytes = Buffer.from(finalHtml, 'utf-8');
-    if (htmlBytes.byteLength > config.maxPageSizeBytes) {
-      throw new Error(
-        `Captured page exceeds max size (${htmlBytes.byteLength} > ${config.maxPageSizeBytes} bytes)`,
-      );
-    }
-
-    // 11. Content hash
-    const contentHash = createHash('sha256').update(htmlBytes).digest('hex');
-
-    // 12. Optional compression
-    let storedBlob: Buffer = htmlBytes;
+    // 7. Hash and optionally compress the canonical MHTML bytes.
+    const contentHash = createHash('sha256').update(canonicalBytes).digest('hex');
+    let storedBlob: Buffer = canonicalBytes;
     let compression: 'none' | 'gzip' = 'none';
 
     if (config.htmlCompression === 'gzip') {
       const { gzipSync } = await import('zlib');
-      storedBlob = gzipSync(htmlBytes);
+      storedBlob = gzipSync(canonicalBytes);
       compression = 'gzip';
     }
 
@@ -269,7 +221,7 @@ export async function capturePage(
         storedBlob,
         compression,
         contentHash,
-        htmlBytes.byteLength,
+        canonicalBytes.byteLength,
         extracted.title,
         extracted.author,
         extracted.siteName,
@@ -277,7 +229,7 @@ export async function capturePage(
         extracted.excerpt,
         extracted.lang,
         extracted.extractedText,
-        extracted.mode,
+        'full_page',
         warnings.length > 0 ? JSON.stringify(warnings) : null,
         Math.round(performance.now() - startedAt),
         captureId,
@@ -291,12 +243,12 @@ export async function capturePage(
 
     const result: CaptureResult = {
       captureId,
-      mode: extracted.mode,
+      mode: 'full_page',
       title: extracted.title,
       sourceUrl: rawUrl,
       finalUrl,
       contentHash,
-      htmlSize: htmlBytes.byteLength,
+      htmlSize: canonicalBytes.byteLength,
       warnings,
     };
 
@@ -304,11 +256,11 @@ export async function capturePage(
       JSON.stringify({
         event: 'capture.succeeded',
         captureId,
-        mode: extracted.mode,
+        mode: 'full_page',
         extractedTextLength: renderedTextLength,
         url: normalisedUrl,
         finalUrl,
-        htmlSize: htmlBytes.byteLength,
+        htmlSize: canonicalBytes.byteLength,
         warnings: warnings.length,
       }),
     );
