@@ -23,6 +23,11 @@ describe('index client', () => {
   test('inline client script is valid JavaScript', () => {
     expect(() => new Function(INDEX_CLIENT_SCRIPT)).not.toThrow();
   });
+
+  test('keeps secondary list actions behind one disclosure', () => {
+    expect(INDEX_CLIENT_SCRIPT).toContain("document.querySelectorAll('.item-more')");
+    expect(INDEX_CLIENT_SCRIPT).toContain("event.key === 'Escape'");
+  });
 });
 
 describe('capture deletion', () => {

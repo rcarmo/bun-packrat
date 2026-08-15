@@ -466,31 +466,47 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
 
   const items = rows.map((c) => {
     const sourceHref = safeExternalHref(c.source_url);
+    const captureTags = getCaptureTags(db, c.id);
+    const modeLabel = c.mode === 'full_page' ? 'Full-page capture' : c.mode === 'metadata_only' ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : 'Article capture';
     return `
     <li class="item">
-      <div class="item-title"><a href="/captures/${c.id}">${esc(c.title ?? '(no title)')}</a></div>
-      <div class="item-meta">
-        <div class="item-facts">
-          <a class="domain" href="${filterHref('domain', getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
-          <span class="mode">${esc(c.mode)}</span>
-          <span class="date">${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
-          ${c.warnings ? '<span class="warnings" title="Capture has warnings">⚠</span>' : ''}
-        </div>
-        <div class="item-actions" role="group" aria-label="Actions for ${esc(c.title ?? 'capture')}">
-          <a class="view-link" href="/captures/${c.id}/article">Article</a>
-          <a class="view-link" href="/captures/${c.id}/markdown">Markdown</a>
-          ${sourceHref ? `<a class="source-link" href="${esc(sourceHref)}" rel="noopener" target="_blank" title="Open original page" aria-label="Open original page">↗</a>` : ''}
-          <a class="export-link" href="/captures/${c.id}/export/html" title="Download HTML">⬇ HTML</a>
-          <a class="export-link" href="/captures/${c.id}/export/md"   title="Download Markdown ZIP">MD</a>
-          <a class="export-link" href="/captures/${c.id}/export/epub" title="Download EPUB">EPUB</a>
-          <a class="export-link" href="/captures/${c.id}/export/pdf"  title="Download PDF">PDF</a>
-          <button class="recapture" data-id="${c.id}" type="button" title="Capture again now" aria-label="Capture again now">↻</button>
-          <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button" title="Delete capture">Delete</button>
-        </div>
+      <div class="item-heading">
+        <div class="item-title"><a href="/captures/${c.id}/article">${esc(c.title ?? '(no title)')}</a></div>
+        <details class="item-more">
+          <summary>More</summary>
+          <div class="item-menu" aria-label="More actions for ${esc(c.title ?? 'capture')}">
+            <div class="item-menu-group">
+              <span class="item-menu-label">View</span>
+              <a href="/captures/${c.id}">Full page</a>
+              <a href="/captures/${c.id}/markdown">Markdown</a>
+              ${sourceHref ? `<a href="${esc(sourceHref)}" rel="noopener" target="_blank">Original source <span aria-hidden="true">↗</span></a>` : ''}
+            </div>
+            <div class="item-menu-group">
+              <span class="item-menu-label">Download</span>
+              <a class="download-link" href="/captures/${c.id}/export/html"><span aria-hidden="true">↓</span> HTML</a>
+              <a class="download-link" href="/captures/${c.id}/export/md"><span aria-hidden="true">↓</span> Markdown ZIP</a>
+              <a class="download-link" href="/captures/${c.id}/export/epub"><span aria-hidden="true">↓</span> EPUB</a>
+              <a class="download-link" href="/captures/${c.id}/export/pdf"><span aria-hidden="true">↓</span> PDF</a>
+            </div>
+            <div class="item-menu-group item-menu-manage">
+              <span class="item-menu-label">Manage</span>
+              <button class="recapture" data-id="${c.id}" type="button">Recapture</button>
+              <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button">Delete…</button>
+            </div>
+          </div>
+        </details>
       </div>
+      <div class="item-facts">
+        <a class="domain" href="${filterHref('domain', getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
+        <span aria-hidden="true">·</span>
+        <span>${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
+        <span aria-hidden="true">·</span>
+        <span>${esc(modeLabel)}</span>
+        ${c.warnings ? '<span class="warnings" title="Capture has warnings" aria-label="Capture has warnings">⚠</span>' : ''}
+      </div>
+      ${captureTags.length ? `<div class="item-tags" aria-label="Tags">${captureTags.map((itemTag) => `<a class="tag" href="${filterHref('tag', itemTag)}">${esc(itemTag)}</a>`).join('')}</div>` : ''}
       ${c.warnings ? `<details class="capture-warnings"><summary>Capture warnings</summary><ul>${parseWarnings(c.warnings).map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
       ${c.error ? `<div class="capture-error">${esc(c.error)}</div>` : ''}
-      ${c.excerpt ? `<div class="item-excerpt">${esc(c.excerpt.slice(0, 200))}</div>` : ''}
     </li>`;
   }).join('');
 
@@ -525,13 +541,11 @@ button,.Button{-webkit-appearance:none;appearance:none;display:inline-flex;align
 .filter-form{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px 8px;align-items:end}.FormControl{display:flex;min-width:0;flex-direction:column;gap:6px}.FormControl-label{color:var(--fg);font-size:12px;font-weight:600;line-height:1.25}.FormControl--q{grid-column:span 3}.FormControl--title{grid-column:span 2}.FormControl--url{grid-column:span 3}.FormControl--date{grid-column:span 2}.FormControl--status,.FormControl--mode{grid-column:span 3}.FormControl--sort,.FormControl--limit,.filter-submit{grid-column:span 2}.filter-submit{align-self:end}
 .tag-cloud{padding:12px 16px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--border)}.tag{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border:1px solid transparent;border-radius:2em;background:var(--canvas-subtle);color:var(--accent);font-size:12px;font-weight:600;text-decoration:none}.tag:hover{border-color:var(--border)}.tag.active{background:var(--accent-emphasis);color:#fff}.tag span{color:inherit;opacity:.75}
 .results-header{min-height:48px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);background:var(--canvas-subtle)}.results-summary{color:var(--fg-muted)}.results-summary strong{color:var(--fg)}.failed-link{font-size:12px;text-decoration:none}.failed-link:hover{text-decoration:underline}
-ul{list-style:none;margin:0;padding:0}.item{padding:16px;border-bottom:1px solid var(--border-muted)}.item:last-child{border-bottom:0}.item:hover{background:color-mix(in srgb,var(--canvas-subtle) 55%,transparent)}.item-title a{color:var(--accent);font-size:16px;font-weight:600;text-decoration:none}.item-title a:hover{text-decoration:underline}.item-meta{margin-top:8px;display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center;justify-content:space-between;color:var(--fg-muted);font-size:12px}.item-facts,.item-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.item-actions{margin-left:auto;justify-content:flex-end}.item-meta a{color:var(--fg-muted);text-decoration:none}.item-meta a:hover{color:var(--accent)}.domain{font-weight:600}.mode{padding:0 7px;border:1px solid var(--border);border-radius:2em;line-height:20px}
-.item-actions>a,.item-actions>button{height:32px;min-height:32px;margin:0;padding:0 10px}.item-actions .source-link,.item-actions .recapture{width:32px;padding:0;font-size:14px}.item-actions .export-link{min-width:44px}.item-actions .view-link{min-width:72px}.item-actions .delete{color:var(--danger)}.item-actions .delete:hover{border-color:var(--danger);background:var(--danger-muted);color:var(--danger)}
-.item-excerpt{max-width:900px;margin-top:8px;color:var(--fg-muted);font-size:13px}.capture-warnings,.capture-error{margin-top:8px;color:#9a6700;font-size:12px}.capture-warnings ul{list-style:disc;padding-left:20px}.capture-error{color:var(--danger)}.empty-state{padding:40px 16px;color:var(--fg-muted);text-align:center}
+ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;border-bottom:1px solid var(--border-muted)}.item:last-child{border-bottom:0}.item:hover{background:color-mix(in srgb,var(--canvas-subtle) 55%,transparent)}.item-heading{display:flex;gap:16px;align-items:flex-start}.item-title{min-width:0;flex:1}.item-title a{color:var(--accent);font-size:16px;font-weight:600;text-decoration:none}.item-title a:hover{text-decoration:underline}.item-facts{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:5px;color:var(--fg-muted);font-size:12px}.item-facts a{color:inherit;text-decoration:none}.item-facts a:hover{color:var(--accent);text-decoration:underline}.domain{font-weight:600}.item-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.item-more{position:relative;flex:0 0 auto}.item-more>summary{display:inline-flex;align-items:center;justify-content:center;min-height:32px;padding:0 10px;border:1px solid transparent;border-radius:6px;color:var(--fg-muted);font-size:12px;font-weight:600;cursor:pointer;list-style:none}.item-more>summary::-webkit-details-marker{display:none}.item-more>summary::after{content:'▾';margin-left:5px;font-size:10px}.item-more>summary:hover,.item-more[open]>summary{border-color:var(--border);background:var(--canvas-default);color:var(--fg)}.item-menu{position:absolute;z-index:20;top:calc(100% + 4px);right:0;width:230px;padding:6px 0;border:1px solid var(--border);border-radius:8px;background:var(--canvas-default);box-shadow:0 8px 24px rgba(31,35,40,.18)}.item-menu-group{padding:6px}.item-menu-group+.item-menu-group{border-top:1px solid var(--border-muted)}.item-menu-label{display:block;padding:2px 8px 5px;color:var(--fg-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.item-menu a,.item-menu button{display:flex;width:100%;min-height:34px;height:auto;align-items:center;justify-content:flex-start;gap:7px;margin:0;padding:7px 8px;border:0;border-radius:5px;background:transparent;box-shadow:none;color:var(--fg);font:13px/1.3 var(--font);text-align:left;text-decoration:none}.item-menu a:hover,.item-menu button:hover{background:var(--canvas-subtle)}.item-menu .delete{color:var(--danger)}.item-menu .delete:hover{background:var(--danger-muted)}.capture-warnings,.capture-error{margin-top:8px;color:#9a6700;font-size:12px}.capture-warnings ul{list-style:disc;padding-left:20px}.capture-error{color:var(--danger)}.empty-state{padding:40px 16px;color:var(--fg-muted);text-align:center}
 .pagination{padding:8px 0 24px;display:flex;justify-content:center;gap:8px}.pagination a{display:inline-flex;padding:5px 12px;border:1px solid transparent;border-radius:6px;color:var(--accent);font-weight:600;text-decoration:none}.pagination a:hover{border-color:var(--border);background:var(--canvas-default)}
-@media(max-width:800px){.filter-form{grid-template-columns:repeat(4,minmax(0,1fr))}.FormControl--q{grid-column:1/-1}.FormControl--title,.FormControl--url,.FormControl--date,.FormControl--status,.FormControl--mode{grid-column:span 2}.FormControl--sort,.FormControl--limit{grid-column:span 1}.filter-submit{grid-column:span 2}}
-@media(max-width:600px){.app-header-inner{min-height:56px;padding:0 16px}.page{padding:16px}.page-heading h1{font-size:20px}.Box-body{padding:12px}.capture-form{grid-template-columns:minmax(0,1fr)}.capture-form button{width:100%}.filter-form{grid-template-columns:repeat(2,minmax(0,1fr))}.FormControl--q,.FormControl--title,.FormControl--url,.filter-submit{grid-column:1/-1}.FormControl--date,.FormControl--status,.FormControl--mode,.FormControl--sort,.FormControl--limit{grid-column:span 1}input[type=search],input[type=url],input[type=date],select,button,.Button{height:44px;min-height:44px}.item{padding:16px}.item-facts,.item-actions{width:100%}.item-actions{justify-content:flex-end}.item-actions>a,.item-actions>button{height:44px;min-height:44px}.item-actions .source-link,.item-actions .recapture{width:44px}.results-header{align-items:flex-start;flex-direction:column}.app-context{display:none}}
-@media(max-width:400px){.filter-form{grid-template-columns:minmax(0,1fr)}.filter-form>*{grid-column:1!important}.item-actions{gap:5px}.item-actions .view-link{min-width:68px}.item-actions>a,.item-actions>button{padding:0 8px}}
+@media(max-width:800px){.filter-form{grid-template-columns:repeat(4,minmax(0,1fr))}.FormControl--q{grid-column:1/-1}.FormControl--title,.FormControl--url,.FormControl--date,.FormControl--status,.FormControl--mode{grid-column:span 2}.FormControl--sort,.FormControl--limit{grid-column:span 1}.filter-submit{grid-column:span 2}.item-menu{position:fixed;left:16px;right:16px;top:auto;bottom:16px;width:auto;max-height:calc(100vh - 32px);overflow:auto}}
+@media(max-width:600px){.app-header-inner{min-height:56px;padding:0 16px}.page{padding:16px}.page-heading h1{font-size:20px}.Box-body{padding:12px}.capture-form{grid-template-columns:minmax(0,1fr)}.capture-form button{width:100%}.filter-form{grid-template-columns:repeat(2,minmax(0,1fr))}.FormControl--q,.FormControl--title,.FormControl--url,.filter-submit{grid-column:1/-1}.FormControl--date,.FormControl--status,.FormControl--mode,.FormControl--sort,.FormControl--limit{grid-column:span 1}input[type=search],input[type=url],input[type=date],select,button,.Button{height:44px;min-height:44px}.item{padding:16px}.item-more>summary{min-height:44px}.item-menu{position:fixed;left:16px;right:16px;top:auto;bottom:16px;width:auto;max-height:calc(100vh - 32px);overflow:auto}.item-menu a,.item-menu button{min-height:44px}.results-header{align-items:flex-start;flex-direction:column}.app-context{display:none}}
+@media(max-width:400px){.filter-form{grid-template-columns:minmax(0,1fr)}.filter-form>*{grid-column:1!important}.item-heading{gap:8px}}
 </style>
 </head>
 <body>

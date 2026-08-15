@@ -1,5 +1,16 @@
 /** Client-side behavior for the server-rendered capture index. */
 export const INDEX_CLIENT_SCRIPT = String.raw`
+document.querySelectorAll('.item-more').forEach((menu) => menu.addEventListener('toggle', () => {
+  if (!menu.open) return;
+  document.querySelectorAll('.item-more[open]').forEach((other) => { if (other !== menu) other.open = false; });
+}));
+document.addEventListener('click', (event) => {
+  document.querySelectorAll('.item-more[open]').forEach((menu) => { if (!menu.contains(event.target)) menu.open = false; });
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') document.querySelectorAll('.item-more[open]').forEach((menu) => { menu.open = false; });
+});
+
 document.querySelectorAll('.delete').forEach((button) => button.addEventListener('click', async () => {
   const impact = JSON.parse(button.dataset.impact || '{}');
   const message = 'Permanently delete capture #' + button.dataset.id + '?\n\n' + button.dataset.title + '\n' + button.dataset.source + '\n' + button.dataset.time + '\n\nAffected relations: ' + (impact.aliases||0) + ' aliases, ' + (impact.metadata||0) + ' metadata rows, ' + (impact.tags||0) + ' tags. ' + (impact.jobs||0) + ' job records will be retained.';
@@ -22,19 +33,14 @@ document.querySelectorAll('.recapture').forEach((button) => button.addEventListe
   try {
     const response = await fetch('/api/captures/' + button.dataset.id + '/recapture', {method:'POST'});
     if (!response.ok) throw new Error('Could not queue recapture');
-    button.textContent = '✓';
-    button.setAttribute('aria-label', 'Recapture queued');
-    button.title = 'Recapture queued';
+    button.textContent = 'Recapture queued';
     setTimeout(() => {
-      button.textContent = '↻';
-      button.setAttribute('aria-label', 'Capture again now');
-      button.title = 'Capture again now';
+      button.textContent = 'Recapture';
       button.disabled = false;
+      button.closest('.item-more')?.removeAttribute('open');
     }, 1800);
   } catch {
-    button.textContent = '!';
-    button.setAttribute('aria-label', 'Recapture failed; try again');
-    button.title = 'Recapture failed; try again';
+    button.textContent = 'Recapture failed — try again';
     button.disabled = false;
   }
 }));
@@ -68,7 +74,7 @@ async function followCaptureJob(jobId) {
       continue;
     }
     if (job.status === 'succeeded') {
-      if (job.capture_id) setCaptureStatus('success', '<strong>Archived successfully.</strong> <a href="/captures/' + job.capture_id + '">Open capture #' + job.capture_id + '</a>');
+      if (job.capture_id) setCaptureStatus('success', '<strong>Archived successfully.</strong> <a href="/captures/' + job.capture_id + '/article">Read capture #' + job.capture_id + '</a>');
       else setCaptureStatus('success', '<strong>Archived successfully.</strong> The capture is now available in the results below.');
       return;
     }
