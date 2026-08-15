@@ -86,9 +86,14 @@ describe('guardSsrf', () => {
   });
 
   test('blocks additional reserved address ranges', () => {
-    for (const address of ['0.1.2.3', '100.64.0.1', '192.0.2.1', '198.18.0.1', '224.0.0.1', '::', 'ff02::1']) {
+    for (const address of ['0.1.2.3', '100.64.0.1', '192.0.0.1', '192.0.2.1', '198.18.0.1', '198.51.100.1', '203.0.113.1', '224.0.0.1', '::', 'ff02::1']) {
       expect(isBlockedAddress(address)).toBe(true);
     }
+  });
+
+  test('allows public addresses elsewhere in 192.0.0.0/16', () => {
+    expect(isBlockedAddress('192.0.66.239')).toBe(false);
+    expect(() => guardSsrf('https://192.0.66.239/image.jpg')).not.toThrow();
   });
 
   test('resolved guard accepts a normal public hostname', async () => {

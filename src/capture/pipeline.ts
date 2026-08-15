@@ -138,15 +138,21 @@ export async function capturePage(
       }
     });
 
-    // 4. Navigate
+    // 4. Require the primary document to parse, then treat stricter readiness
+    // states as bounded settling signals. News/analytics pages can keep
+    // connections alive indefinitely and must not fail a valid capture solely
+    // because global network silence never arrives.
     const response = await page.goto(normalisedUrl, {
-      waitUntil: config.captureWaitUntil,
+      waitUntil: 'domcontentloaded',
       timeout: config.captureTimeoutMs,
     });
 
     if (!response) {
       throw new Error(`Navigation to ${normalisedUrl} returned no response`);
     }
+
+    const readinessWarning = await waitForCaptureReadiness(page, config.captureWaitUntil, config.captureTimeoutMs);
+    if (readinessWarning) warnings.push(readinessWarning);
 
     const finalUrl = page.url();
     await guardSsrfResolved(finalUrl);
@@ -280,6 +286,21 @@ export async function capturePage(
     throw err;
   } finally {
     if (browser) await browser.close().catch(() => {});
+  }
+}
+
+export async function waitForCaptureReadiness(
+  page: Pick<any, 'waitForLoadState'>,
+  waitUntil: PackratConfig['captureWaitUntil'],
+  captureTimeoutMs: number,
+): Promise<string | null> {
+  if (waitUntil === 'commit' || waitUntil === 'domcontentloaded') return null;
+  const timeout = Math.min(10_000, Math.max(1_000, Math.floor(captureTimeoutMs / 4)));
+  try {
+    await page.waitForLoadState(waitUntil, { timeout });
+    return null;
+  } catch {
+    return `Page did not reach ${waitUntil} within ${timeout}ms; continued after DOM content loaded`;
   }
 }
 

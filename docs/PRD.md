@@ -50,7 +50,7 @@ The initial deployment has one trusted user on the local network.
 1. The user submits a URL through the web UI, HTTP API, bookmarklet or command line.
 2. The service normalises the URL and checks for a recent matching capture.
 3. A worker opens the page in Chromium through Playwright.
-4. The capture pipeline waits for a configurable readiness condition, dismisses known overlays, scrolls lazy content into view and records the final URL.
+4. The capture pipeline requires the primary document to reach `DOMContentLoaded`, then applies the configurable stricter readiness condition as a bounded best-effort settling signal. It dismisses known overlays, scrolls lazy content into view and records the final URL.
 5. Chromium serialises the complete rendered DOM and loaded resources as MHTML. The service stores it in one database transaction and extracts article metadata and search text as derived data.
 6. The archive page becomes available at a stable local URL.
 

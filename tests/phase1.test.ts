@@ -13,7 +13,7 @@ import { normaliseUrl } from '../src/capture/url.js';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { getOrCreateUrl, insertCapture } from '../src/db/index.js';
-import { formatImageRecoveryWarning } from '../src/capture/pipeline.js';
+import { formatImageRecoveryWarning, waitForCaptureReadiness } from '../src/capture/pipeline.js';
 
 let db: Database;
 
@@ -59,6 +59,29 @@ const SAMPLE_ARTICLE_HTML = `<!DOCTYPE html>
   <form action="/subscribe"><input type="email"><button>Subscribe</button></form>
 </body>
 </html>`;
+
+describe('capture readiness', () => {
+  test('treats networkidle timeout as a warning after DOM content loaded', async () => {
+    let received: { state?: string; timeout?: number } = {};
+    const warning = await waitForCaptureReadiness({
+      waitForLoadState: async (state: string, options: { timeout: number }) => {
+        received = { state, timeout: options.timeout };
+        throw new Error('timeout');
+      },
+    }, 'networkidle', 60_000);
+    expect(received).toEqual({ state: 'networkidle', timeout: 10_000 });
+    expect(warning).toContain('continued after DOM content loaded');
+  });
+
+  test('skips redundant readiness waits and accepts successful load state', async () => {
+    let calls = 0;
+    const page = { waitForLoadState: async () => { calls++; } };
+    expect(await waitForCaptureReadiness(page, 'domcontentloaded', 60_000)).toBeNull();
+    expect(calls).toBe(0);
+    expect(await waitForCaptureReadiness(page, 'load', 60_000)).toBeNull();
+    expect(calls).toBe(1);
+  });
+});
 
 describe('Phase 1 pipeline proof', () => {
   test('extractContent returns article mode for a well-structured article', () => {

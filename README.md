@@ -91,7 +91,7 @@ bun run src/cli/index.ts capture https://example.com/article
 | `PACKRAT_MAX_ASSET_BYTES` | `5242880` | Maximum asset size for the legacy HTML inliner (5 MB) |
 | `PACKRAT_HTML_COMPRESSION` | `none` | Stored HTML compression: `none` or `gzip` |
 | `PACKRAT_FRESHNESS_SECONDS` | `86400` | Reuse the latest successful capture for this interval; `0` disables |
-| `PACKRAT_CAPTURE_WAIT_UNTIL` | `networkidle` | Playwright readiness: `load`, `domcontentloaded`, `networkidle`, `commit` |
+| `PACKRAT_CAPTURE_WAIT_UNTIL` | `networkidle` | Best-effort post-DOM readiness: `load`, `domcontentloaded`, `networkidle`, `commit`; strict waits are bounded to 10 seconds |
 | `PACKRAT_CAPTURE_SETTLING_MS` | `1000` | Delay after readiness before overlay removal and scrolling |
 | `PACKRAT_AUTH_USER` | `packrat` | HTTP Basic authentication username |
 | `PACKRAT_AUTH_PASSWORD` | none | Required password unless authentication is explicitly disabled |
