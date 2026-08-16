@@ -1,10 +1,8 @@
-# bun-packrat — Implementation Plan
+# Implementation plan
 
-Project path: `/workspace/projects/bun-packrat`  
-PRD: `docs/PRD.md`  
-Status: **Canonical MHTML capture and agent content API deployed; ArchiveBox import and hostname cutover remain outside this change**
+Canonical MHTML capture, offline Article rendering and the content API are implemented. ArchiveBox import and hostname cutover are planned.
 
----
+Requirements: [PRD.md](PRD.md)
 
 ## Phases
 
@@ -24,7 +22,7 @@ Status: **Canonical MHTML capture and agent content API deployed; ArchiveBox imp
 | Playwright canonical MHTML pipeline | `src/capture/pipeline.ts` | ✅ |
 | MHTML decoder and safe full-page renderer | `src/capture/canonical.ts` | ✅ |
 | HTTP server (serve + submit) | `src/server.ts` | ✅ |
-| CLI entry point | `src/cli/index.ts` | ✅ |
+| CLI entry point: capture, search, list, export, delete, backup, verify, migrate and status | `src/cli/index.ts` | ✅ |
 | Unit tests: schema | `tests/db.test.ts` | ✅ |
 | Unit tests: sanitiser | `tests/sanitize.test.ts` | ✅ |
 | Unit tests: URL normaliser | `tests/url.test.ts` | ✅ |
@@ -105,6 +103,15 @@ Steps:
 ```
 bun-packrat/
 ├── docs/
+│   ├── README.md                      # documentation index
+│   ├── architecture.md                # system and data flow
+│   ├── api.md                         # HTTP API reference
+│   ├── cli.md                         # command-line reference
+│   ├── configuration.md               # environment contract
+│   ├── deployment.md                  # Docker and local setup
+│   ├── operations.md                  # backup, restore and recovery
+│   ├── testing.md                     # test and acceptance gates
+│   ├── PLAN.md                        # implementation status
 │   └── PRD.md                         # requirements baseline
 ├── src/
 │   ├── capture/
@@ -158,8 +165,7 @@ bun-packrat/
 ├── .gitignore
 ├── Dockerfile                         # oven/bun:1.3 + Chromium headless-shell baked in
 ├── Makefile                           # build / run / stop / logs / shell / clean
-├── PLAN.md                            # this file
-├── README.md
+├── README.md                          # concise project entry point
 ├── bun.lock
 ├── docker-compose.yml                 # /data + /config volumes, shm_size, healthcheck
 ├── package.json
@@ -177,6 +183,6 @@ bun-packrat/
 | 3 | Maximum captured-page and per-asset size | Defaults set (20 MB page, 5 MB asset); configurable via env |
 | 4 | Freshness interval before a repeated submission creates a new capture | Implemented; 24h default via `PACKRAT_FRESHNESS_SECONDS`, forced recapture available |
 | 5 | Authenticated captures | Basic authentication required by default; capture-session credential injection remains deferred |
-| 6 | Local archived-link rewriting | Not yet implemented; planned for Phase 2 polish or Phase 3 |
+| 6 | Local archived-link rewriting | Not implemented; candidate work for the ArchiveBox importer |
 | 7 | EPUB backend: pure Bun vs external converter | Resolved: pure Bun ZIP, no external tools required |
 | 8 | Service hostname | `packrat` / `packrat.local`; cutover in Phase 5 |

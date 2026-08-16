@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-14T11:25:00Z
+updated: 2026-08-16T14:40:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -12,7 +12,7 @@ A Bun service will replace ArchiveBox with a searchable web archive whose only p
 
 ## Problem
 
-The current [[ArchiveBox]] deployment occupies about 35 GB and 130,000 files for roughly 1,500 snapshot directories. Captures can be incomplete, and each URL can produce several extractor outputs that are difficult to browse, back up and convert.
+The current ArchiveBox deployment occupies about 35 GB and 130,000 files for roughly 1,500 snapshot directories. Captures can be incomplete, and each URL can produce several extractor outputs that are difficult to browse, back up and convert.
 
 The replacement needs one useful representation of each page, one database to back up, and deterministic exports. It must also import the existing ArchiveBox collection in bulk without discarding provenance or silently treating failed captures as successful ones.
 
@@ -577,7 +577,7 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ## References
 
-- [[ArchiveBox]] — current VM (`192.168.1.123`), storage inventory, backup and migration notes.
+- ArchiveBox — current VM (`192.168.1.123`), storage inventory, backup and migration notes.
 - [RFC 2397: The `data` URL scheme](https://www.rfc-editor.org/rfc/rfc2397)
 - [SQLite online backup API](https://www.sqlite.org/backup.html)
 - [SQLite FTS5](https://www.sqlite.org/fts5.html)

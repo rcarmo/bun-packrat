@@ -32,7 +32,7 @@ RUN bun --bun node_modules/.bin/playwright install chromium chromium-headless-sh
 COPY src ./src
 COPY docs ./docs
 COPY docker ./docker
-COPY README.md PLAN.md ./
+COPY README.md LICENSE ./
 
 RUN chmod +x /app/docker/entrypoint.sh
 
