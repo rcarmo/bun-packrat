@@ -1,5 +1,7 @@
 # bun-packrat
 
+![Packrat archive index](docs/screenshot.png)
+
 `bun-packrat` captures rendered web pages into SQLite. New captures use Chromium MHTML as the source of record and derive safe offline HTML, Article, Markdown, EPUB and PDF views on demand.
 
 The service runs on Bun with SQLite FTS5, an in-process job queue and Playwright. It is designed for desktop browsers and Safari on iPhone and iPad.
