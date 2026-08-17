@@ -91,6 +91,25 @@ describe('agent capture API', () => {
     expect((await malformed.json() as any).error).toContain('Invalid search query');
   });
 
+  test('exposes the original URL in capture listings and reading views', async () => {
+    const source = 'https://example.com/canonical';
+    const expectedLink = `href="${source}" rel="noopener noreferrer" target="_blank">Original`;
+
+    const index = await fetch(base).then((response) => response.text());
+    expect(index).toContain(`class="original-link" ${expectedLink}`);
+    expect(index).not.toContain('Original source');
+
+    for (const path of [
+      `/captures/${canonicalId}`,
+      `/captures/${canonicalId}/article`,
+      `/captures/${canonicalId}/markdown`,
+    ]) {
+      const response = await fetch(`${base}${path}`, { headers: { Accept: 'text/html' } });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain(expectedLink);
+    }
+  });
+
   test('extracts every native format and preserves legacy availability semantics', async () => {
     const expectedTypes: Record<string, string> = {
       mhtml: 'multipart/related',

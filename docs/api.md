@@ -104,7 +104,9 @@ The `confirm` value must be the capture ID as a string or the JSON value `true`.
 | `GET /captures/:id/markdown.raw` | Raw Markdown with original image URLs. |
 | `GET /captures/:id?raw=1` | Canonical MHTML attachment for fresh captures; stored HTML for legacy captures. |
 
-The full-page and Article routes use a restrictive Content Security Policy and do not load remote resources.
+The capture list and rendered Full page, Article and Markdown toolbars link to the stored original source URL. The link opens in a new tab. Following it leaves Packrat and contacts the source site.
+
+The full-page and Article routes use a restrictive Content Security Policy and do not load remote resources until the user follows an external link.
 
 ## Content extraction
 

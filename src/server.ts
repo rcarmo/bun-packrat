@@ -89,7 +89,8 @@ const server = Bun.serve({
       if (markdownMatch[2]) {
         return new Response(rendered.markdown, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } });
       }
-      return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1');
+      const sourceHref = safeExternalHref(getCaptureById(db, id)?.source_url ?? '');
+      return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1', sourceHref);
     }
 
     const contentMatch = path.match(/^\/api\/captures\/(\d+)\/content\/(mhtml|html|article-html|markdown|markdown-zip|epub|pdf)$/);
@@ -375,7 +376,8 @@ function contentProvenanceHeaders(capture: CaptureRow, format: string): Record<s
 
 async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise<Response> {
   const row = getCaptureHtml(db, id);
-  if (!row?.html) return new Response('Capture not found', { status: 404 });
+  const meta = getCaptureById(db, id);
+  if (!row?.html || !meta) return new Response('Capture not found', { status: 404 });
 
   const storedBytes = readStoredCaptureBytes(row);
   if (raw && detectStoredCaptureFormat(storedBytes) === 'mhtml') {
@@ -388,7 +390,8 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
 
   let html = renderStoredCaptureHtml(row);
   if (!raw) {
-    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Full page</strong> · <a style="color:#9cf" href="/captures/${id}/article">Article</a> · <a style="color:#9cf" href="/captures/${id}/markdown">Markdown</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Canonical MHTML</a></nav>`;
+    const sourceLink = renderOriginalLink(meta.source_url, 'color:#9cf');
+    const toolbar = `<nav class="packrat-view-switch" style="position:sticky;top:0;z-index:2147483647;padding:.45rem 1rem;background:#222;color:#fff;font:14px system-ui,sans-serif"><strong>Full page</strong> · <a style="color:#9cf" href="/captures/${id}/article">Article</a> · <a style="color:#9cf" href="/captures/${id}/markdown">Markdown</a> · <a style="color:#9cf" href="/captures/${id}?raw=1">Canonical MHTML</a>${sourceLink ? ` · ${sourceLink}` : ''}</nav>`;
     html = html.replace(/<body([^>]*)>/i, `<body$1>${toolbar}`);
   }
   return new Response(html, {
@@ -407,7 +410,8 @@ async function serveArticleHtml(db: Database, id: number): Promise<Response> {
   const row = getCaptureHtml(db, id);
   if (!meta || meta.status !== 'succeeded' || !row?.html) return json404('Capture not found or not yet succeeded');
   const article = renderArticleDocument(deriveStoredArticleHtml(row, meta.final_url));
-  const toolbar = `<nav class="packrat-article-switch"><a href="/captures/${id}">Full page</a><strong>Article</strong><a href="/captures/${id}/markdown">Markdown</a><a href="/captures/${id}?raw=1">Canonical MHTML</a></nav>`;
+  const sourceLink = renderOriginalLink(meta.source_url);
+  const toolbar = `<nav class="packrat-article-switch"><a href="/captures/${id}">Full page</a><strong>Article</strong><a href="/captures/${id}/markdown">Markdown</a><a href="/captures/${id}?raw=1">Canonical MHTML</a>${sourceLink}</nav>`;
   return new Response(article.replace(/<body([^>]*)>/i, `<body$1>${toolbar}`), { headers: {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -479,7 +483,6 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
               <span class="item-menu-label">View</span>
               <a href="/captures/${c.id}">Full page</a>
               <a href="/captures/${c.id}/markdown">Markdown</a>
-              ${sourceHref ? `<a href="${esc(sourceHref)}" rel="noopener" target="_blank">Original source <span aria-hidden="true">↗</span></a>` : ''}
             </div>
             <div class="item-menu-group">
               <span class="item-menu-label">Download</span>
@@ -502,6 +505,7 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
         <span>${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
         <span aria-hidden="true">·</span>
         <span>${esc(modeLabel)}</span>
+        ${sourceHref ? `<span aria-hidden="true">·</span><a class="original-link" href="${esc(sourceHref)}" rel="noopener noreferrer" target="_blank">Original <span aria-hidden="true">↗</span></a>` : ''}
         ${c.warnings ? '<span class="warnings" title="Capture has warnings" aria-label="Capture has warnings">⚠</span>' : ''}
       </div>
       ${captureTags.length ? `<div class="item-tags" aria-label="Tags">${captureTags.map((itemTag) => `<a class="tag" href="${filterHref('tag', itemTag)}">${esc(itemTag)}</a>`).join('')}</div>` : ''}
@@ -686,10 +690,11 @@ function captureQueryOptions(url: URL, limit: number, offset: number) {
   } as const;
 }
 
-function renderMarkdownView(id: number, title: string, markdown: string, remoteImages: boolean): Response {
+function renderMarkdownView(id: number, title: string, markdown: string, remoteImages: boolean, sourceHref: string | null): Response {
   const content = renderMarkdownHtml(markdown, remoteImages);
   const enableHref = `/captures/${id}/markdown?remote=1`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:var(--notice-bg);color:var(--notice-fg);border:1px solid var(--notice-border);border-radius:4px}.warning a{color:inherit;font-weight:700}img{max-width:100%;height:auto}main{min-width:0}pre{max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}p,li,blockquote,figcaption{overflow-wrap:anywhere;word-break:break-word}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}.table-scroll{max-width:100%;margin:1.5rem 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px}table{width:100%;min-width:36rem;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.55rem .7rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th:last-child,td:last-child{border-right:0}tbody tr:last-child td{border-bottom:0}th{background:var(--surface);font-weight:600}tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 55%,transparent)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a></nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
+  const sourceLink = sourceHref ? ` · ${renderOriginalLink(sourceHref)}` : '';
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:var(--notice-bg);color:var(--notice-fg);border:1px solid var(--notice-border);border-radius:4px}.warning a{color:inherit;font-weight:700}img{max-width:100%;height:auto}main{min-width:0}pre{max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}p,li,blockquote,figcaption{overflow-wrap:anywhere;word-break:break-word}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}.table-scroll{max-width:100%;margin:1.5rem 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px}table{width:100%;min-width:36rem;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.55rem .7rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th:last-child,td:last-child{border-right:0}tbody tr:last-child td{border-bottom:0}th{background:var(--surface);font-weight:600}tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 55%,transparent)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a>${sourceLink}</nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
   return new Response(html, { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'Content-Security-Policy': remoteImages ? "default-src 'none'; style-src 'unsafe-inline'; img-src https: http:; base-uri 'none'; frame-ancestors 'none'" : "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -735,6 +740,13 @@ function safeExternalHref(value: string): string | null {
     const url = new URL(value);
     return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
   } catch { return null; }
+}
+
+function renderOriginalLink(value: string, style = ''): string {
+  const href = safeExternalHref(value);
+  if (!href) return '';
+  const styleAttr = style ? ` style="${style}"` : '';
+  return `<a${styleAttr} href="${esc(href)}" rel="noopener noreferrer" target="_blank">Original <span aria-hidden="true">↗</span></a>`;
 }
 
 function getDomain(url: string): string {
