@@ -1,6 +1,6 @@
 # Testing
 
-Packrat uses the Bun test runner and TypeScript's no-emit type check. The current suite contains 121 tests across 13 files.
+Packrat uses the Bun test runner and TypeScript's no-emit type check. The current suite contains 122 tests across 13 files.
 
 ## Full gate
 

@@ -471,7 +471,8 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
   const items = rows.map((c) => {
     const sourceHref = safeExternalHref(c.source_url);
     const captureTags = getCaptureTags(db, c.id);
-    const modeLabel = c.mode === 'full_page' ? 'Full-page capture' : c.mode === 'metadata_only' ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : 'Article capture';
+    const exceptionalMode = c.mode === 'metadata_only' ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : c.mode === 'article' ? 'Legacy article' : null;
+    const attribution = captureAttribution(c.author, c.site_name, getDomain(c.source_url));
     return `
     <li class="item">
       <div class="item-heading">
@@ -503,8 +504,9 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
         <a class="domain" href="${filterHref('domain', getDomain(c.source_url))}">${esc(getDomain(c.source_url))}</a>
         <span aria-hidden="true">·</span>
         <span>${esc(c.captured_at?.slice(0, 10) ?? '')}</span>
-        <span aria-hidden="true">·</span>
-        <span>${esc(modeLabel)}</span>
+        ${c.html_size != null ? `<span aria-hidden="true">·</span><span class="capture-size" title="Canonical capture size">${formatBytes(c.html_size)}</span>` : ''}
+        ${exceptionalMode ? `<span aria-hidden="true">·</span><span>${exceptionalMode}</span>` : ''}
+        ${attribution ? `<span aria-hidden="true">·</span><span>${esc(attribution)}</span>` : ''}
         ${sourceHref ? `<span aria-hidden="true">·</span><a class="original-link" href="${esc(sourceHref)}" rel="noopener noreferrer" target="_blank">Original <span aria-hidden="true">↗</span></a>` : ''}
         ${c.warnings ? '<span class="warnings" title="Capture has warnings" aria-label="Capture has warnings">⚠</span>' : ''}
       </div>
@@ -733,6 +735,22 @@ function authRequired(): Response {
     status: 401,
     headers: { 'WWW-Authenticate': 'Basic realm="Packrat", charset="UTF-8"' },
   });
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
+}
+
+function captureAttribution(author: string | null, siteName: string | null, domain: string): string | null {
+  const cleanAuthor = author?.trim();
+  if (cleanAuthor) return `by ${cleanAuthor}`;
+  const cleanSite = siteName?.trim();
+  if (!cleanSite) return null;
+  const normalise = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const domainLabel = domain.replace(/^www\./i, '').split('.')[0] ?? domain;
+  return normalise(cleanSite) === normalise(domainLabel) ? null : cleanSite;
 }
 
 function safeExternalHref(value: string): string | null {
