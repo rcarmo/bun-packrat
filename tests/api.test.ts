@@ -97,6 +97,9 @@ describe('agent capture API', () => {
 
     const index = await fetch(base).then((response) => response.text());
     expect(index).toContain(`class="original-link" ${expectedLink}`);
+    expect(index).not.toContain('name="mode"');
+    expect(index).not.toContain('Capture mode');
+    expect(index).toContain('input[type=date]::-webkit-date-and-time-value');
     expect(index).toContain('class="capture-size" title="Canonical capture size"');
     expect(index).toContain('>API fixtures</span>');
     expect(index).not.toContain('Full-page capture');
