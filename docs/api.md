@@ -175,11 +175,14 @@ Removing a tag's final capture association also removes the unused tag from the 
 ## Service status and bookmarklet
 
 ```text
+GET /status
 GET /api/status
 GET /bookmarklet.js
 ```
 
-The status response reports capture counts, queue depth, active workers, capture duration, import counts and database size.
+`/status` is the human-readable queue monitor. It refreshes every ten seconds and shows queue totals, active workers, target URLs, attempts, timings, capture links and readable errors for active and recent jobs.
+
+`/api/status` is the machine-readable status response. It reports capture counts, queue depth, active workers, capture duration, import counts and database size.
 
 ## ArchiveBox source-PDF enrichment
 

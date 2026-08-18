@@ -139,6 +139,35 @@ describe('agent capture API', () => {
     }
   });
 
+  test('renders a human queue monitor while preserving JSON status', async () => {
+    const writeDb = openDatabase(dbPath);
+    writeDb.exec(`INSERT INTO jobs(kind,status,capture_id,payload,error,attempt_count,max_attempts,queued_at,started_at,finished_at)
+      VALUES ('capture','succeeded',?,? ,NULL,1,3,'2026-08-18T18:00:00Z','2026-08-18T18:00:01Z','2026-08-18T18:00:05Z'),
+             ('capture','failed',NULL,? ,?,2,3,'2026-08-18T18:01:00Z','2026-08-18T18:01:01Z','2026-08-18T18:01:11Z')`, [canonicalId, JSON.stringify({url:'https://example.com/canonical'}), JSON.stringify({url:'https://failed.example.com/article'}), '<script>alert("unsafe")</script>']);
+    writeDb.close();
+
+    const response = await fetch(`${base}/status`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const html = await response.text();
+    expect(html).toContain('<title>Queue status — Packrat</title>');
+    expect(html).toContain('http-equiv="refresh" content="10"');
+    expect(html).toContain('Queue is idle');
+    expect(html).toContain('failed.example.com/article');
+    expect(html).toContain('&lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;');
+    expect(html).not.toContain('<script>alert("unsafe")</script>');
+    expect(html).toContain(`href="/captures/${canonicalId}">Capture #${canonicalId}</a>`);
+    expect(html).toContain('2 of 3');
+    expect(html).toContain('href="/api/status">JSON status</a>');
+
+    const json = await fetch(`${base}/api/status`);
+    expect(json.headers.get('content-type')).toContain('application/json');
+    expect((await json.json() as any).jobQueue).toEqual({ queued:0, running:0, activeWorkers:0 });
+    const index = await fetch(base).then((result) => result.text());
+    expect(index).toContain('class="status-link" href="/status">Queue status</a>');
+  });
+
   test('manages per-capture tags and renders individually removable filters', async () => {
     const added = await fetch(`${base}/api/captures/${canonicalId}/tags`, {
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ tag:'  reference  ' }),

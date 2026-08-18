@@ -37,7 +37,7 @@ export interface PipelineOptions {
   force?: boolean;
 }
 
-const TOOL_VERSION = 'packrat/0.2.5';
+const TOOL_VERSION = 'packrat/0.2.6';
 
 /**
  * Run the full capture pipeline for a URL.
@@ -413,7 +413,7 @@ async function storeDirectPdf(
     html: null, compression: 'none', content_hash: downloaded.sha256, html_size: null,
     title: downloaded.filename, author: null, site_name: null, published_at: null,
     excerpt: null, lang: null, extracted_text: downloaded.filename ?? rawUrl,
-    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.5', warnings: null,
+    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.6', warnings: null,
   });
   db.transaction(() => {
     attachSourcePdf(db, {

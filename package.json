@@ -1,6 +1,6 @@
 {
   "name": "bun-packrat",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "SQLite-backed web archive with canonical MHTML and byte-exact source PDF capture",
   "private": true,
   "type": "module",

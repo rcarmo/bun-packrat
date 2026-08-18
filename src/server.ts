@@ -245,6 +245,9 @@ const server = Bun.serve({
     }
 
     // ── Status ────────────────────────────────────────────────────────────
+    if (method === 'GET' && path === '/status') {
+      return renderStatusPage(db, queue);
+    }
     if (method === 'GET' && path === '/api/status') {
       return Response.json(buildStatus(db, queue));
     }
@@ -719,7 +722,7 @@ ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;borde
   <div class="app-header-inner">
     <a class="brand" href="/" aria-label="Packrat home"><svg width="24" height="24" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 1A1.75 1.75 0 0 0 1 2.75v10.5C1 14.216 1.784 15 2.75 15h10.5A1.75 1.75 0 0 0 15 13.25V2.75A1.75 1.75 0 0 0 13.25 1Zm0 1.5h10.5a.25.25 0 0 1 .25.25V5h-11V2.75a.25.25 0 0 1 .25-.25ZM2.5 6.5h11v6.75a.25.25 0 0 1-.25.25H2.75a.25.25 0 0 1-.25-.25Zm3.25 1a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5Z"/></svg><span>Packrat</span></a>
     <span class="app-context">Web archive</span>
-    <a class="status-link" href="/api/status">Status</a>
+    <a class="status-link" href="/status">Queue status</a>
   </div>
 </header>
 <main class="page">
@@ -771,6 +774,85 @@ ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;borde
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
+
+interface QueueStatusJob {
+  id: number;
+  kind: string;
+  status: string;
+  capture_id: number | null;
+  payload: string | null;
+  error: string | null;
+  attempt_count: number;
+  max_attempts: number;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+function renderStatusPage(db: Database, queue: JobQueue): Response {
+  const status = buildStatus(db, queue);
+  const counts = db.query<{ status: string; count: number }, []>(
+    `SELECT status,COUNT(*) count FROM jobs WHERE kind='capture' GROUP BY status`,
+  ).all();
+  const count = (name: string) => counts.find((item) => item.status === name)?.count ?? 0;
+  const jobs = db.query<QueueStatusJob, []>(`
+    SELECT id,kind,status,capture_id,payload,error,attempt_count,max_attempts,queued_at,started_at,finished_at
+    FROM jobs WHERE kind='capture'
+    ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,
+             CASE WHEN status IN ('running','queued') THEN id END ASC,
+             CASE WHEN status NOT IN ('running','queued') THEN id END DESC
+    LIMIT 50
+  `).all();
+  const now = new Date();
+  const jobRows = jobs.map((job) => {
+    const payload = safeObjectJson(job.payload);
+    const target = typeof payload.url === 'string' ? payload.url : '';
+    const targetHref = safeExternalHref(target);
+    const timingEnd = job.finished_at ?? now.toISOString();
+    const duration = job.started_at ? formatDuration(Date.parse(timingEnd) - Date.parse(job.started_at)) : 'Not started';
+    const attemptText = `${job.attempt_count} of ${job.max_attempts}`;
+    const captureLink = job.capture_id ? `<a href="/captures/${job.capture_id}">Capture #${job.capture_id}</a>` : '—';
+    const error = job.error ? `<div class="job-error">${esc(job.error)}</div>` : '';
+    const targetLabel = target ? esc(target) : '(URL unavailable)';
+    const targetCell = targetHref ? `<a class="job-url" href="${esc(targetHref)}" rel="noopener noreferrer" target="_blank">${targetLabel}</a>` : `<span class="job-url">${targetLabel}</span>`;
+    return `<tr data-status="${esc(job.status)}"><td><a href="/api/jobs/${job.id}">#${job.id}</a></td><td><span class="status-badge status-${esc(job.status)}">${esc(job.status)}</span></td><td>${targetCell}${error}</td><td>${attemptText}</td><td><time datetime="${esc(job.queued_at)}">${esc(formatStatusTime(job.queued_at))}</time></td><td>${esc(duration)}</td><td>${captureLink}</td></tr>`;
+  }).join('');
+  const busy = status.jobQueue.running > 0 || status.jobQueue.queued > 0;
+  const queueSummary = status.jobQueue.running > 0
+    ? `${status.jobQueue.running} running, ${status.jobQueue.queued} waiting`
+    : status.jobQueue.queued > 0 ? `${status.jobQueue.queued} waiting for a worker` : 'Queue is idle';
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>Queue status — Packrat</title><style>
+:root{color-scheme:light;--bg:#f6f8fa;--surface:#fff;--subtle:#f6f8fa;--fg:#1f2328;--muted:#59636e;--border:#d1d9e0;--accent:#0969da;--success:#1a7f37;--success-bg:#dafbe1;--warning:#9a6700;--warning-bg:#fff8c5;--danger:#cf222e;--danger-bg:#ffebe9;--header:#25292e;--header-fg:#fff;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#0d1117;--surface:#161b22;--subtle:#21262d;--fg:#f0f6fc;--muted:#8b949e;--border:#30363d;--accent:#58a6ff;--success:#3fb950;--success-bg:#12361f;--warning:#d29922;--warning-bg:#3d2f05;--danger:#f85149;--danger-bg:#3d1214;--header:#010409;--header-fg:#f0f6fc}}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 var(--font)}a{color:var(--accent)}header{background:var(--header);color:var(--header-fg)}.header-inner{max-width:1280px;min-height:64px;margin:auto;padding:0 24px;display:flex;align-items:center;gap:16px}.brand{color:inherit;font-size:16px;font-weight:600;text-decoration:none}.context{color:rgba(255,255,255,.75)}.api-link{margin-left:auto;color:inherit}.page{max-width:1280px;margin:auto;padding:24px}.heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px}.heading h1{margin:0;font-size:24px;font-weight:400}.heading p{margin:4px 0 0;color:var(--muted)}.refresh{color:var(--muted);font-size:12px;white-space:nowrap}.summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:20px}.card{padding:16px;border:1px solid var(--border);border-radius:6px;background:var(--surface)}.card strong{display:block;font-size:24px;line-height:1.15}.card span{color:var(--muted);font-size:12px}.queue-state{grid-column:span 2}.queue-state strong{font-size:18px}.queue-state.busy{border-color:var(--warning);background:var(--warning-bg)}.panel{border:1px solid var(--border);border-radius:6px;background:var(--surface);overflow:hidden}.panel-header{display:flex;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--subtle)}.panel-header h2{margin:0;font-size:14px}.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}th,td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th{color:var(--muted);font-size:12px;font-weight:600;white-space:nowrap}tbody tr:last-child td{border-bottom:0}.job-url{display:block;max-width:580px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.job-error{max-width:680px;margin-top:4px;color:var(--danger);font-size:12px;overflow-wrap:anywhere}.status-badge{display:inline-block;padding:2px 7px;border-radius:2em;background:var(--subtle);font-size:12px;font-weight:600}.status-running,.status-queued{color:var(--warning);background:var(--warning-bg)}.status-succeeded{color:var(--success);background:var(--success-bg)}.status-failed,.status-cancelled{color:var(--danger);background:var(--danger-bg)}.empty{padding:32px;color:var(--muted);text-align:center}@media(max-width:850px){.summary{grid-template-columns:repeat(3,minmax(0,1fr))}.queue-state{grid-column:span 3}}@media(max-width:560px){.header-inner,.page{padding-left:16px;padding-right:16px}.context{display:none}.heading{display:block}.refresh{margin-top:8px}.summary{grid-template-columns:repeat(2,minmax(0,1fr))}.queue-state{grid-column:span 2}.card{padding:12px}th,td{padding:9px 10px}}
+</style></head><body><header><div class="header-inner"><a class="brand" href="/">Packrat</a><span class="context">Queue status</span><a class="api-link" href="/api/status">JSON status</a></div></header><main class="page"><div class="heading"><div><h1>Capture queue</h1><p>Live worker state and the 50 most relevant capture jobs.</p></div><div class="refresh">Updated ${esc(formatStatusTime(now.toISOString()))} · refreshes every 10 seconds</div></div><section class="summary" aria-label="Queue summary"><div class="card queue-state${busy ? ' busy' : ''}"><strong>${esc(queueSummary)}</strong><span>${status.jobQueue.activeWorkers} active worker${status.jobQueue.activeWorkers === 1 ? '' : 's'}</span></div><div class="card"><strong>${count('queued')}</strong><span>Queued</span></div><div class="card"><strong>${count('running')}</strong><span>Running</span></div><div class="card"><strong>${count('succeeded')}</strong><span>Succeeded jobs</span></div><div class="card"><strong>${count('failed') + count('cancelled')}</strong><span>Failed or cancelled</span></div></section><section class="panel"><div class="panel-header"><h2>Active and recent jobs</h2><span>${status.captures.succeeded.toLocaleString()} successful captures · ${status.captures.failed.toLocaleString()} failed</span></div><div class="table-scroll"><table><thead><tr><th>Job</th><th>Status</th><th>Target and error</th><th>Attempts</th><th>Queued</th><th>Run time</th><th>Result</th></tr></thead><tbody>${jobRows || '<tr><td class="empty" colspan="7">No capture jobs yet.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+  return new Response(html, { headers: {
+    'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
+  }});
+}
+
+function safeObjectJson(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+function formatStatusTime(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString('en-GB', { dateStyle:'medium', timeStyle:'medium', timeZone:'UTC' }) + ' UTC' : value;
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return 'Unknown';
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
 
 function buildStatus(db: Database, queue: JobQueue) {
   const stats = db
