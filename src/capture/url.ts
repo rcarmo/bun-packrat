@@ -121,7 +121,10 @@ export async function guardSsrfResolved(
 
   let addresses: Array<{ address: string }>;
   try {
-    addresses = await lookup(hostname, { all: true, verbatim: true });
+    addresses = await Promise.race([
+      lookup(hostname, { all: true, verbatim: true }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS lookup timed out after 10000ms')), 10_000)),
+    ]);
   } catch (err: any) {
     throw new UrlValidationError(`Could not resolve hostname ${hostname}: ${err?.message ?? err}`);
   }

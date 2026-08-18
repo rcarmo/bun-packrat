@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { openDatabase, runMigrations, createJob, claimNextJob, finishJob, recoverStuckJobs, getJobById } from '../src/db/index.js';
+import { openDatabase, runMigrations, createJob, claimNextJob, finishJob, recoverPendingCaptures, recoverStuckJobs, getJobById, getOrCreateUrl, insertCapture } from '../src/db/index.js';
 import type { Database } from 'bun:sqlite';
 
 let db: Database;
@@ -80,6 +80,14 @@ describe('job lifecycle', () => {
     const job = getJobById(db, id);
     expect(job!.status).toBe('failed');
     expect(job!.error).toBe('Navigation timeout');
+  });
+
+  test('recovery closes abandoned pending captures before retrying jobs', () => {
+    const url = getOrCreateUrl(db, 'https://example.com/interrupted', 'https://example.com/interrupted');
+    const id = insertCapture(db, { url_id:url.id,source_url:url.original,final_url:url.original,html:null,compression:'none',content_hash:null,html_size:null,title:null,author:null,site_name:null,published_at:null,excerpt:null,lang:null,extracted_text:null,mode:'full_page',status:'pending',capture_tool:'test',warnings:null });
+    expect(recoverPendingCaptures(db)).toBe(1);
+    expect(db.query<{ status:string; error:string },[number]>('SELECT status,error FROM captures WHERE id=?').get(id)).toEqual({ status:'failed', error:'Capture interrupted by process restart' });
+    expect(recoverPendingCaptures(db)).toBe(0);
   });
 
   test('recoverStuckJobs resets running jobs to queued', () => {

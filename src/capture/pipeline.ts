@@ -37,7 +37,7 @@ export interface PipelineOptions {
   force?: boolean;
 }
 
-const TOOL_VERSION = 'packrat/0.2.3';
+const TOOL_VERSION = 'packrat/0.2.4';
 
 /**
  * Run the full capture pipeline for a URL.
@@ -126,10 +126,10 @@ export async function capturePage(
 
   try {
     // 5. Launch browser
-    browser = await chromium.launch({
+    browser = await withDeadline(chromium.launch({
       headless: true,
       executablePath: findChromiumExecutable(config.playwrightBrowsersPath),
-    });
+    }), config.captureTimeoutMs, 'Chromium launch');
 
     const context = await browser.newContext({
       userAgent:
@@ -219,9 +219,13 @@ export async function capturePage(
     // used for extraction and later reading; it never mutates stored bytes.
     await scrollPage(page);
     await materialiseLazyImages(page);
-    const renderedHtml = removeArchivedOverlays(await page.content());
-    const cdp = await context.newCDPSession(page);
-    const snapshot = await cdp.send('Page.captureSnapshot', { format: 'mhtml' }) as { data: string };
+    const renderedHtml = removeArchivedOverlays(await withDeadline(page.content(), config.captureTimeoutMs, 'Rendered HTML collection'));
+    const cdp = await withDeadline(context.newCDPSession(page), config.captureTimeoutMs, 'CDP session creation');
+    const snapshot = await withDeadline(
+      cdp.send('Page.captureSnapshot', { format: 'mhtml' }) as Promise<{ data: string }>,
+      config.captureTimeoutMs,
+      'MHTML snapshot',
+    );
     await closePlaywrightResource(context, 5_000);
 
     const canonicalBytes = Buffer.from(snapshot.data, 'utf-8');
@@ -339,6 +343,20 @@ export async function capturePage(
   }
 }
 
+export async function withDeadline<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function closePlaywrightResource(resource: { close(): Promise<unknown> }, timeoutMs = 5_000): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -395,7 +413,7 @@ async function storeDirectPdf(
     html: null, compression: 'none', content_hash: downloaded.sha256, html_size: null,
     title: downloaded.filename, author: null, site_name: null, published_at: null,
     excerpt: null, lang: null, extracted_text: downloaded.filename ?? rawUrl,
-    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.3', warnings: null,
+    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.4', warnings: null,
   });
   db.transaction(() => {
     attachSourcePdf(db, {

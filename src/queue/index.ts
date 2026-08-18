@@ -14,6 +14,7 @@ import type { PackratConfig } from '../types.js';
 import {
   claimNextJob,
   finishJob,
+  recoverPendingCaptures,
   recoverStuckJobs,
 } from '../db/index.js';
 import { capturePage } from '../capture/pipeline.js';
@@ -50,7 +51,11 @@ export class JobQueue {
   start(): void {
     if (this.timer) return;
 
-    // Recover stuck jobs from a previous crash
+    // Close abandoned pending rows before retrying jobs from a previous crash.
+    const interruptedCaptures = recoverPendingCaptures(this.db);
+    if (interruptedCaptures > 0) {
+      console.log(JSON.stringify({ event: 'captures.recovered', count: interruptedCaptures }));
+    }
     const recovered = recoverStuckJobs(this.db);
     if (recovered > 0) {
       console.log(JSON.stringify({ event: 'queue.recovered', count: recovered }));
@@ -130,11 +135,27 @@ export class JobQueue {
     const url = payload.url as string;
     if (!url) throw new Error('capture job missing url in payload');
 
-    const result = await capturePage(url, {
-      config: this.config,
-      db: this.db,
-      force: payload.force === true,
-    });
+    // Playwright can occasionally lose its Chromium process without rejecting
+    // the outstanding protocol promise. The abandoned promise cannot be
+    // cancelled safely because it still closes over the shared database, so a
+    // watchdog restarts the process. Startup recovery requeues the attempt and
+    // max_attempts prevents an infinite crash loop.
+    const watchdogMs = Math.max(5 * 60_000, this.config.captureTimeoutMs * 4);
+    const watchdog = setTimeout(() => {
+      console.error(JSON.stringify({ event:'capture.watchdog', jobId, url, watchdogMs }));
+      process.exit(70);
+    }, watchdogMs);
+    watchdog.unref?.();
+    let result;
+    try {
+      result = await capturePage(url, {
+        config: this.config,
+        db: this.db,
+        force: payload.force === true,
+      });
+    } finally {
+      clearTimeout(watchdog);
+    }
 
     // Link the job to its capture
     this.db.exec('UPDATE jobs SET capture_id = ? WHERE id = ?', [result.captureId, jobId]);

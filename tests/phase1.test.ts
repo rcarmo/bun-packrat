@@ -13,7 +13,7 @@ import { normaliseUrl } from '../src/capture/url.js';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { getOrCreateUrl, insertCapture } from '../src/db/index.js';
-import { closePlaywrightResource, formatImageRecoveryWarning, hasPdfUrlHint, waitForCaptureReadiness } from '../src/capture/pipeline.js';
+import { closePlaywrightResource, formatImageRecoveryWarning, hasPdfUrlHint, waitForCaptureReadiness, withDeadline } from '../src/capture/pipeline.js';
 
 let db: Database;
 
@@ -69,6 +69,11 @@ describe('direct PDF URL hints', () => {
 });
 
 describe('bounded Playwright cleanup', () => {
+  test('rejects abandoned protocol operations at a bounded deadline', async () => {
+    await expect(withDeadline(new Promise(() => {}), 10, 'MHTML snapshot')).rejects.toThrow('MHTML snapshot timed out after 10ms');
+    expect(await withDeadline(Promise.resolve('ok'), 100, 'operation')).toBe('ok');
+  });
+
   test('does not let a hung browser close block a completed capture', async () => {
     expect(await closePlaywrightResource({ close: async () => await new Promise(() => {}) }, 10)).toBe(false);
     expect(await closePlaywrightResource({ close: async () => {} }, 100)).toBe(true);

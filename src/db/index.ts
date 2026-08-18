@@ -681,6 +681,15 @@ export function finishJob(
   })();
 }
 
+export function recoverPendingCaptures(db: Database): number {
+  const count = db.query<{ n: number }, []>("SELECT COUNT(*) n FROM captures WHERE status='pending'").get()?.n ?? 0;
+  if (count) {
+    db.exec(`UPDATE captures SET status='failed',error='Capture interrupted by process restart',
+      updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE status='pending'`);
+  }
+  return count;
+}
+
 export function recoverStuckJobs(db: Database): number {
   // Retry abandoned jobs while attempts remain; otherwise terminate them.
   db.exec(
