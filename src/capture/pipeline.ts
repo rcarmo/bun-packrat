@@ -14,14 +14,22 @@ import { extractContent } from './extract.js';
 import { collectImageSources } from './assets.js';
 import { DISMISS_OVERLAYS_JS } from './overlays.js';
 import {
+  attachSourcePdf,
+  beginPdfExtraction,
+  getCaptureById,
   getOrCreateUrl,
+  getSourcePdfBytes,
   insertCapture,
   updateCaptureStatus,
   updateLatestCapture,
   findRecentCapture,
   addCaptureAlias,
+  savePdfExtraction,
   setCaptureImageSources,
 } from '../db/index.js';
+import { ConfirmedPdfDownloadError, downloadPdf, NotPdfSourceError } from '../pdf/download.js';
+import type { DownloadedPdf } from '../pdf/download.js';
+import { extractPdf } from '../pdf/extract.js';
 
 export interface PipelineOptions {
   config: PackratConfig;
@@ -29,7 +37,7 @@ export interface PipelineOptions {
   force?: boolean;
 }
 
-const TOOL_VERSION = 'packrat/0.1.0';
+const TOOL_VERSION = 'packrat/0.2.0';
 
 /**
  * Run the full capture pipeline for a URL.
@@ -57,6 +65,10 @@ export async function capturePage(
   if (!opts.force) {
     const recent = findRecentCapture(db, normalisedUrl, config.freshnessSeconds);
     if (recent) {
+      if (recent.source_pdf_sha256 && ['pending', 'running'].includes(recent.source_pdf_extraction_status ?? '')) {
+        const bytes = getSourcePdfBytes(db, recent.id);
+        if (bytes) await extractStoredPdf(db, recent.id, bytes, config);
+      }
       return {
         captureId: recent.id,
         mode: recent.mode,
@@ -70,7 +82,23 @@ export async function capturePage(
     }
   }
 
-  // 3. Create a capture row in pending state
+  // 3. A PDF-looking URL takes the bounded direct path before Chromium. MIME
+  // and extension remain hints only: storage still requires a %PDF- signature.
+  if (hasPdfUrlHint(normalisedUrl)) {
+    try {
+      const downloaded = await downloadPdf(normalisedUrl, {
+        maxBytes: config.maxPdfSizeBytes,
+        timeoutMs: config.captureTimeoutMs,
+      });
+      return await storeDirectPdf(rawUrl, normalisedUrl, downloaded, opts, startedAt);
+    } catch (error) {
+      // A signature-confirmed PDF that crosses a hard limit must not fall back
+      // to an unbounded browser capture. Other responses preserve HTML/MHTML.
+      if (error instanceof ConfirmedPdfDownloadError) throw error;
+    }
+  }
+
+  // 4. Create a capture row in pending state
   const urlRow = getOrCreateUrl(db, normalisedUrl, rawUrl);
   const captureId = insertCapture(db, {
     url_id: urlRow.id,
@@ -97,7 +125,7 @@ export async function capturePage(
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {
-    // 4. Launch browser
+    // 5. Launch browser
     browser = await chromium.launch({
       headless: true,
       executablePath: findChromiumExecutable(config.playwrightBrowsersPath),
@@ -105,7 +133,7 @@ export async function capturePage(
 
     const context = await browser.newContext({
       userAgent:
-        'Mozilla/5.0 (compatible; packrat-archiver/0.1; +https://github.com/rcarmo/bun-packrat)',
+        'Mozilla/5.0 (compatible; packrat-archiver/0.2; +https://github.com/rcarmo/bun-packrat)',
       javaScriptEnabled: true,
       offline: false,
     });
@@ -149,6 +177,28 @@ export async function capturePage(
 
     if (!response) {
       throw new Error(`Navigation to ${normalisedUrl} returned no response`);
+    }
+
+    // Extensionless PDF responses are recognised by MIME only as a hint, then
+    // re-fetched through the byte-bounded signature-validating path. Ordinary
+    // HTML pages are not pre-fetched and retain the v0.1.0 single navigation.
+    const responseMime = response.headers()['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+    if (responseMime === 'application/pdf') {
+      try {
+        const downloaded = await downloadPdf(normalisedUrl, {
+          maxBytes: config.maxPdfSizeBytes,
+          timeoutMs: config.captureTimeoutMs,
+        });
+        await context.close();
+        await browser.close();
+        browser = null;
+        db.exec('DELETE FROM captures WHERE id=?', [captureId]);
+        return await storeDirectPdf(rawUrl, normalisedUrl, downloaded, opts, startedAt);
+      } catch (error) {
+        // Mislabelled HTML keeps the already-loaded browser capture. Only a
+        // byte-confirmed PDF hard failure aborts instead of falling back.
+        if (!(error instanceof NotPdfSourceError)) throw error;
+      }
     }
 
     const readinessWarning = await waitForCaptureReadiness(page, config.captureWaitUntil, config.captureTimeoutMs);
@@ -210,6 +260,7 @@ export async function capturePage(
          compression = ?,
          content_hash = ?,
          html_size = ?,
+         body_format = 'mhtml',
          title = ?,
          author = ?,
          site_name = ?,
@@ -287,6 +338,101 @@ export async function capturePage(
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
+}
+
+export function hasPdfUrlHint(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const decodedPath = decodeURIComponent(url.pathname).toLowerCase();
+    return decodedPath.endsWith('.pdf') || [...url.searchParams.values()].some((item) => item.toLowerCase().endsWith('.pdf'));
+  } catch { return false; }
+}
+
+async function storeDirectPdf(
+  rawUrl: string,
+  normalisedUrl: string,
+  downloaded: DownloadedPdf,
+  opts: PipelineOptions,
+  startedAt: number,
+): Promise<CaptureResult> {
+  const { config, db } = opts;
+  const urlRow = getOrCreateUrl(db, normalisedUrl, rawUrl);
+  const existing = db.query<{ id: number }, [string]>(`
+    SELECT cp.capture_id id FROM capture_pdfs cp JOIN pdf_blobs pb ON pb.id=cp.pdf_blob_id
+    WHERE pb.sha256=? ORDER BY cp.capture_id LIMIT 1
+  `).get(downloaded.sha256);
+  if (existing) {
+    addCaptureAlias(db, existing.id, rawUrl, 'original');
+    if (downloaded.finalUrl !== rawUrl) addCaptureAlias(db, existing.id, downloaded.finalUrl, 'redirect');
+    const capture = db.query<{ title: string | null; warnings: string | null }, [number]>(
+      'SELECT title,warnings FROM captures WHERE id=?',
+    ).get(existing.id);
+    const existingMetadata = getCaptureById(db, existing.id);
+    if (existingMetadata && ['pending', 'running'].includes(existingMetadata.source_pdf_extraction_status ?? '')) {
+      await extractStoredPdf(db, existing.id, downloaded.bytes, config);
+    }
+    return {
+      captureId: existing.id, mode: 'pdf', title: capture?.title ?? downloaded.filename,
+      sourceUrl: rawUrl, finalUrl: downloaded.finalUrl, contentHash: downloaded.sha256,
+      htmlSize: 0, pdfSize: downloaded.bytes.byteLength,
+      warnings: capture?.warnings ? JSON.parse(capture.warnings) : [],
+    };
+  }
+
+  const captureId = insertCapture(db, {
+    url_id: urlRow.id, source_url: rawUrl, final_url: downloaded.finalUrl,
+    html: null, compression: 'none', content_hash: downloaded.sha256, html_size: null,
+    title: downloaded.filename, author: null, site_name: null, published_at: null,
+    excerpt: null, lang: null, extracted_text: downloaded.filename ?? rawUrl,
+    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.0', warnings: null,
+  });
+  db.transaction(() => {
+    attachSourcePdf(db, {
+      captureId, bytes: downloaded.bytes, sourceKind: 'direct',
+      sourceMime: downloaded.mimeType, sourceFilename: downloaded.filename,
+      sourceLocator: downloaded.finalUrl,
+    });
+    updateLatestCapture(db, urlRow.id, captureId);
+    addCaptureAlias(db, captureId, rawUrl, 'original');
+    if (downloaded.finalUrl !== rawUrl) addCaptureAlias(db, captureId, downloaded.finalUrl, 'redirect');
+  })();
+
+  // Storage success is independent of extraction success. PDF.js runs in an
+  // isolated worker and the stored PDF remains available on timeout/failure.
+  const pdfSize = downloaded.bytes.byteLength;
+  const extraction = await extractStoredPdf(db, captureId, downloaded.bytes, config);
+  if (extraction.title) {
+    db.query(`UPDATE captures SET title=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`)
+      .run(extraction.title, captureId);
+  }
+  db.query('UPDATE captures SET capture_duration_ms=? WHERE id=?')
+    .run(Math.round(performance.now() - startedAt), captureId);
+
+  return {
+    captureId, mode: 'pdf', title: extraction.title ?? downloaded.filename,
+    sourceUrl: rawUrl, finalUrl: downloaded.finalUrl, contentHash: downloaded.sha256,
+    htmlSize: 0, pdfSize, warnings: extraction.warnings,
+  };
+}
+
+async function extractStoredPdf(db: Database, captureId: number, bytes: Uint8Array, config: PackratConfig) {
+  beginPdfExtraction(db, captureId, 'pdfjs-dist/5.4.149');
+  let extraction;
+  try {
+    extraction = await extractPdf(bytes, {
+      timeoutMs: config.pdfExtractionTimeoutMs,
+      maxPages: config.maxPdfPages,
+      maxTextBytes: config.maxPdfTextBytes,
+    });
+  } catch (error: any) {
+    const message = String(error?.message ?? error).slice(0, 1000);
+    extraction = {
+      status: 'failed' as const, pageCount: null, title: null, text: '', textBytes: 0,
+      textTruncated: false, warnings: [`PDF text extraction failed: ${message}`], error: message,
+    };
+  }
+  savePdfExtraction(db, captureId, { ...extraction, extractor: 'pdfjs-dist/5.4.149' });
+  return extraction;
 }
 
 export async function waitForCaptureReadiness(

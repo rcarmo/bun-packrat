@@ -288,7 +288,7 @@ async function fetchWithSafeRedirects(initialUrl: string, signal: AbortSignal): 
     const resp = await fetch(current, {
       signal,
       redirect: 'manual',
-      headers: { 'User-Agent': 'packrat-archiver/0.1' },
+      headers: { 'User-Agent': 'packrat-archiver/0.2' },
     });
     if (![301, 302, 303, 307, 308].includes(resp.status)) return resp;
     const location = resp.headers.get('location');

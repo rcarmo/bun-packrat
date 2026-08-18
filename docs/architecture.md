@@ -1,6 +1,6 @@
 # Architecture
 
-Packrat stores each successful fresh capture as canonical Chromium MHTML in SQLite. Browser views and exports are derived from that stored snapshot without fetching the source page again.
+Packrat stores successful web captures as canonical Chromium MHTML in SQLite. Direct PDF responses are stored byte-for-byte in separate content-addressed BLOB rows. Browser views and exports derive from those stored sources.
 
 ## Components
 
@@ -12,6 +12,8 @@ flowchart LR
     Q --> P[Playwright capture worker]
     P --> W[Public web page]
     P --> D
+    Q --> X[Bounded PDF download and PDF.js worker]
+    X --> D
     D --> R[MHTML decoder and safe renderer]
     R --> V[Full-page and Article views]
     R --> E[HTML, Markdown ZIP, EPUB and PDF exports]
@@ -75,6 +77,7 @@ Legacy captures can contain stored HTML. Content sniffing keeps those records re
 | `article` | Legacy Readability-based canonical HTML. |
 | `imported_singlefile` | Validated ArchiveBox SingleFile output. Planned for the importer. |
 | `metadata_only` | URL and metadata without a usable page body. |
+| `pdf` | Byte-exact source PDF with bounded extracted text. |
 
 ## Data model
 
@@ -90,7 +93,11 @@ SQLite uses WAL mode and foreign-key enforcement.
 | `capture_tags` | Capture-to-tag relation. |
 | `jobs` | Queued, running, succeeded, failed and cancelled jobs. |
 | `attempts` | Bounded diagnostic history for job attempts. |
-| `archivebox_imports` | Planned ArchiveBox provenance and migration outcomes. |
+| `archivebox_imports` | ArchiveBox provenance and migration outcomes. |
+| `pdf_blobs` | SHA-256-deduplicated byte-exact source PDFs. |
+| `capture_pdfs` | Capture-to-PDF relation and original-response provenance. |
+| `pdf_extractions` | PDF.js status, page count, bounded text and warnings. |
+| `archivebox_pdf_enrichment` | Independent resumable outcome for every ArchiveBox row. |
 | `captures_fts` | FTS5 index over title, site, author, URL, domain and body text. |
 | `schema_migrations` | Applied schema versions. |
 
@@ -111,7 +118,8 @@ Full-page and Article views make no external requests. Markdown mode can expose 
 | `src/capture/` | URL validation, Playwright capture, MHTML rendering, extraction and sanitisation. |
 | `src/db/` | Schema migrations and database operations. |
 | `src/queue/` | SQLite-backed in-process worker queue. |
-| `src/export/` | HTML, Markdown, EPUB and PDF derivation. |
+| `src/export/` | HTML, Markdown, EPUB and rendered PDF derivation. |
+| `src/pdf/` | Bounded source-PDF download and isolated PDF.js extraction. |
 | `src/cli/` | Command-line interface. |
 | `src/server.ts` | HTTP routes and server-rendered UI. |
 | `tests/` | Unit and integration tests. |

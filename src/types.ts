@@ -6,7 +6,8 @@ export type CaptureMode =
   | 'article'
   | 'full_page'
   | 'imported_singlefile'
-  | 'metadata_only';
+  | 'metadata_only'
+  | 'pdf';
 
 export type CaptureStatus =
   | 'pending'
@@ -15,6 +16,16 @@ export type CaptureStatus =
   | 'cancelled';
 
 export type Compression = 'none' | 'gzip' | 'zstd';
+export type CanonicalBodyFormat = 'html' | 'mhtml';
+export type PdfSourceKind = 'direct' | 'archivebox_original';
+export type PdfExtractionStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'timeout'
+  | 'encrypted'
+  | 'image_only';
 
 export type JobKind = 'capture' | 'import_archivebox' | 'export';
 
@@ -25,22 +36,26 @@ export type JobStatus =
   | 'failed'
   | 'cancelled';
 
-export interface CaptureRow {
+/** Capture fields safe for ordinary list and detail requests. Large canonical
+ * bodies and extracted text are deliberately excluded. */
+export interface CaptureMetadataRow {
   id: number;
   url_id: number;
   source_url: string;
   final_url: string;
-  html: Uint8Array | null;
   compression: Compression;
   content_hash: string | null;
   html_size: number | null;
+  body_format: CanonicalBodyFormat | null;
+  source_pdf_sha256: string | null;
+  source_pdf_size: number | null;
+  source_pdf_extraction_status: PdfExtractionStatus | null;
   title: string | null;
   author: string | null;
   site_name: string | null;
   published_at: string | null;
   excerpt: string | null;
   lang: string | null;
-  extracted_text: string | null;
   mode: CaptureMode;
   status: CaptureStatus;
   capture_tool: string;
@@ -51,6 +66,37 @@ export interface CaptureRow {
   captured_at: string;
   created_at: string;
   updated_at: string;
+  /** Present on list/search results. */
+  domain?: string;
+}
+
+/** Full legacy capture row. Use only for writes or explicitly body-bearing
+ * operations; metadata reads return CaptureMetadataRow instead. */
+export interface CaptureRow extends CaptureMetadataRow {
+  html: Uint8Array | null;
+  extracted_text: string | null;
+}
+
+export interface CaptureBodyRow {
+  html: Uint8Array | null;
+  compression: Compression;
+}
+
+export interface SourcePdfMetadata {
+  capture_id: number;
+  pdf_blob_id: number;
+  sha256: string;
+  byte_size: number;
+  source_kind: PdfSourceKind;
+  source_mime: string | null;
+  source_filename: string | null;
+  source_locator: string | null;
+  extraction_status: PdfExtractionStatus;
+  page_count: number | null;
+  extracted_text_bytes: number | null;
+  text_truncated: number;
+  extraction_warnings: string | null;
+  extraction_error: string | null;
 }
 
 export interface UrlRow {
@@ -82,8 +128,8 @@ export interface JobRow {
 /** Capture request — input to the pipeline */
 export interface CaptureRequest {
   url: string;
-  /** hint: force article mode or full_page */
-  mode?: 'article' | 'full_page';
+  /** hint: force article mode, full_page, or direct PDF */
+  mode?: 'article' | 'full_page' | 'pdf';
   /** max time (ms) to wait for page load, default from config */
   timeout?: number;
 }
@@ -97,6 +143,7 @@ export interface CaptureResult {
   finalUrl: string;
   contentHash: string;
   htmlSize: number;
+  pdfSize?: number;
   warnings: string[];
 }
 
@@ -108,6 +155,10 @@ export interface PackratConfig {
   playwrightBrowsersPath: string;
   maxPageSizeBytes: number;
   maxAssetSizeBytes: number;
+  maxPdfSizeBytes: number;
+  pdfExtractionTimeoutMs: number;
+  maxPdfPages: number;
+  maxPdfTextBytes: number;
   captureTimeoutMs: number;
   maxConcurrentCaptures: number;
   /** Supported storage compression formats. */

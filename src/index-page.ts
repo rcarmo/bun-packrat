@@ -1,10 +1,10 @@
 import type { Database } from 'bun:sqlite';
-import type { CaptureRow } from './types.js';
+import type { CaptureMetadataRow } from './types.js';
 import type { CaptureQueryOptions } from './db/index.js';
 import { countCaptures, listCaptures, searchCaptures } from './db/index.js';
 
 export interface CaptureIndexPage {
-  rows: CaptureRow[];
+  rows: CaptureMetadataRow[];
   matchingCount: number;
   effectiveOffset: number;
   error: string;

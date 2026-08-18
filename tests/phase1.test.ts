@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { openDatabase, runMigrations, getCaptureById, searchCaptures } from '../src/db/index.js';
+import { openDatabase, runMigrations, getCaptureById, getCaptureHtml, searchCaptures } from '../src/db/index.js';
 import { extractContent, recoverSemanticArticleImages } from '../src/capture/extract.js';
 import { sanitizeHtml } from '../src/capture/sanitize.js';
 import { assembleHtml } from '../src/capture/assemble.js';
@@ -13,7 +13,7 @@ import { normaliseUrl } from '../src/capture/url.js';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { getOrCreateUrl, insertCapture } from '../src/db/index.js';
-import { formatImageRecoveryWarning, waitForCaptureReadiness } from '../src/capture/pipeline.js';
+import { formatImageRecoveryWarning, hasPdfUrlHint, waitForCaptureReadiness } from '../src/capture/pipeline.js';
 
 let db: Database;
 
@@ -59,6 +59,14 @@ const SAMPLE_ARTICLE_HTML = `<!DOCTYPE html>
   <form action="/subscribe"><input type="email"><button>Subscribe</button></form>
 </body>
 </html>`;
+
+describe('direct PDF URL hints', () => {
+  test('recognises path and query PDF hints without treating them as validation', () => {
+    expect(hasPdfUrlHint('https://example.com/report.PDF?download=1')).toBe(true);
+    expect(hasPdfUrlHint('https://example.com/download?file=report.pdf')).toBe(true);
+    expect(hasPdfUrlHint('https://example.com/article?format=pdf')).toBe(false);
+  });
+});
 
 describe('capture readiness', () => {
   test('treats networkidle timeout as a warning after DOM content loaded', async () => {
@@ -269,8 +277,8 @@ describe('Phase 1 pipeline proof', () => {
       expect(results[0].id).toBe(captureId);
     }
 
-    // Verify the stored HTML is safe
-    const storedHtmlStr = Buffer.from(stored!.html as any).toString('utf-8');
+    // Verify the stored HTML is safe through the explicit body accessor.
+    const storedHtmlStr = Buffer.from(getCaptureHtml(db, captureId)!.html as any).toString('utf-8');
     expect(storedHtmlStr).not.toContain('<script');
     expect(storedHtmlStr).not.toContain('<iframe');
   });

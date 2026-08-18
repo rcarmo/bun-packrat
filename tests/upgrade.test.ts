@@ -17,7 +17,7 @@ describe('database upgrade and backup', () => {
       const db = openDatabase(path);
       runMigrations(db);
       const versions = db.query<{ version: number }, []>('SELECT version FROM schema_migrations ORDER BY version').all().map((r) => r.version);
-      expect(versions).toEqual([1, 2, 3, 4]);
+      expect(versions).toEqual([1, 2, 3, 4, 5, 6]);
       const columns = db.query<{ name: string }, []>('PRAGMA table_info(captures)').all().map((r) => r.name);
       expect(columns).toContain('note');
       expect(columns).toContain('capture_duration_ms');
@@ -62,7 +62,7 @@ describe('database upgrade and backup', () => {
       const restored = openDatabase(backup);
       const integrity = restored.query<{ integrity_check: string }, []>('PRAGMA integrity_check').get();
       expect(integrity?.integrity_check).toBe('ok');
-      expect(restored.query<{ n: number }, []>('SELECT COUNT(*) n FROM schema_migrations').get()?.n).toBe(4);
+      expect(restored.query<{ n: number }, []>('SELECT COUNT(*) n FROM schema_migrations').get()?.n).toBe(6);
       restored.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

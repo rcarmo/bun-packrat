@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, getCaptureById, listCaptures, searchCaptures, updateLatestCapture, findRecentCapture, addCaptureAlias, getCaptureAliases, updateCaptureNote } from '../src/db/index.js';
+import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, getCaptureById, getCaptureHtml, listCaptures, searchCaptures, updateLatestCapture, findRecentCapture, addCaptureAlias, getCaptureAliases, updateCaptureNote, attachSourcePdf, getSourcePdfBytes, getSourcePdfMetadata, getSourcePdfRange } from '../src/db/index.js';
 import type { Database } from 'bun:sqlite';
 
 let db: Database;
@@ -24,7 +24,7 @@ describe('schema migrations', () => {
       .get();
     expect(row?.version).toBe(1);
     const latest = db.query<{ version: number }, []>('SELECT MAX(version) version FROM schema_migrations').get();
-    expect(latest?.version).toBe(4);
+    expect(latest?.version).toBe(6);
   });
 
   test('creates all required tables', () => {
@@ -45,6 +45,10 @@ describe('schema migrations', () => {
     expect(tables).toContain('attempts');
     expect(tables).toContain('archivebox_imports');
     expect(tables).toContain('schema_migrations');
+    expect(tables).toContain('pdf_blobs');
+    expect(tables).toContain('capture_pdfs');
+    expect(tables).toContain('pdf_extractions');
+    expect(tables).toContain('archivebox_pdf_enrichment');
   });
 
   test('creates captures_fts virtual table', () => {
@@ -135,6 +139,98 @@ describe('insertCapture', () => {
     expect(c!.title).toBe('Test Page');
     expect(c!.status).toBe('succeeded');
     expect(c!.mode).toBe('article');
+    expect(c!.body_format).toBe('html');
+    expect(Object.hasOwn(c!, 'html')).toBe(false);
+    expect(Object.hasOwn(c!, 'extracted_text')).toBe(false);
+    expect(Buffer.from(getCaptureHtml(db, id)!.html! as Uint8Array).toString('utf8')).toBe('<html></html>');
+  });
+
+  test('keeps list and search rows free of canonical bodies and extracted text', () => {
+    const url = getOrCreateUrl(db, 'https://large.example.com/', 'https://large.example.com/');
+    insertCapture(db, {
+      url_id: url.id, source_url: url.original, final_url: url.original,
+      html: Buffer.from(`<!doctype html><html><body>${'A'.repeat(1024 * 1024)}</body></html>`), compression: 'none', content_hash: 'large', html_size: 1024 * 1024,
+      title: 'Large searchable capture', author: null, site_name: null, published_at: null,
+      excerpt: null, lang: null, extracted_text: 'large searchable body', mode: 'article',
+      status: 'succeeded', capture_tool: 'test/0', warnings: null,
+    });
+    for (const row of [...listCaptures(db), ...searchCaptures(db, 'searchable')]) {
+      expect(Object.hasOwn(row, 'html')).toBe(false);
+      expect(Object.hasOwn(row, 'extracted_text')).toBe(false);
+    }
+  });
+
+  test('resumes canonical body-format backfill after migration 5 is recorded', () => {
+    const url = getOrCreateUrl(db, 'https://legacy.example.com/', 'https://legacy.example.com/');
+    const legacyBody = Buffer.from('From: <Saved by Blink>\r\nContent-Type: multipart/related; boundary=x\r\n');
+    const id = insertCapture(db, {
+      url_id: url.id, source_url: url.original, final_url: url.original,
+      html: legacyBody,
+      compression: 'none', content_hash: 'legacy', html_size: legacyBody.byteLength, title: 'Legacy', author: null,
+      site_name: null, published_at: null, excerpt: null, lang: null, extracted_text: null,
+      mode: 'full_page', status: 'succeeded', capture_tool: 'test/0', warnings: null,
+    });
+    db.exec('UPDATE captures SET body_format=NULL WHERE id=?', [id]);
+    expect(getCaptureById(db, id)?.body_format).toBeNull();
+    runMigrations(db);
+    expect(getCaptureById(db, id)?.body_format).toBe('mhtml');
+  });
+});
+
+describe('source PDF storage', () => {
+  function capture(title: string): number {
+    const url = getOrCreateUrl(db, `https://${title.toLowerCase()}.example.com/`, `https://${title.toLowerCase()}.example.com/`);
+    return insertCapture(db, {
+      url_id: url.id, source_url: url.original, final_url: url.original,
+      html: null, compression: 'none', content_hash: null, html_size: null,
+      title, author: null, site_name: null, published_at: null, excerpt: null,
+      lang: null, extracted_text: title, mode: 'metadata_only', status: 'succeeded',
+      capture_tool: 'test/0', warnings: null,
+    });
+  }
+
+  test('validates, deduplicates, and reads source PDFs by bounded byte range', () => {
+    const first = capture('First');
+    const second = capture('Second');
+    const pdf = Buffer.from('%PDF-1.7\nbyte-exact-source-pdf\n%%EOF\n');
+    const one = attachSourcePdf(db, { captureId: first, bytes: pdf, sourceKind: 'direct', sourceMime: 'application/pdf' });
+    const two = attachSourcePdf(db, { captureId: second, bytes: pdf, sourceKind: 'archivebox_original', sourceLocator: 'archive/1/output.pdf' });
+    expect(one.sha256).toBe(two.sha256);
+    expect(one.pdf_blob_id).toBe(two.pdf_blob_id);
+    expect(db.query<{ n:number },[]>('SELECT count(*) n FROM pdf_blobs').get()?.n).toBe(1);
+    expect(Buffer.from(getSourcePdfBytes(db, first)!)).toEqual(pdf);
+    expect(Buffer.from(getSourcePdfRange(db, first, 5, 11)!).toString('utf8')).toBe('1.7\nbyt');
+    expect(getSourcePdfMetadata(db, first)?.extraction_status).toBe('pending');
+    expect(getCaptureById(db, first)?.source_pdf_size).toBe(pdf.byteLength);
+    expect(Object.hasOwn(getCaptureById(db, first)!, 'bytes')).toBe(false);
+  });
+
+  test('rejects non-PDF bytes and invalid ranges', () => {
+    const id = capture('Invalid');
+    expect(() => attachSourcePdf(db, { captureId: id, bytes: Buffer.from('not pdf'), sourceKind: 'direct' })).toThrow('%PDF-');
+    expect(() => getSourcePdfRange(db, id, -1, 2)).toThrow('Invalid PDF byte range');
+  });
+
+  test('removes the prior orphaned blob when one capture is reattached', () => {
+    const id = capture('Reattached');
+    const first = Buffer.from('%PDF-1.4\nfirst\n%%EOF');
+    const second = Buffer.from('%PDF-1.4\nsecond\n%%EOF');
+    attachSourcePdf(db, { captureId:id,bytes:first,sourceKind:'direct' });
+    attachSourcePdf(db, { captureId:id,bytes:second,sourceKind:'direct' });
+    expect(db.query<{ n:number },[]>('SELECT count(*) n FROM pdf_blobs').get()?.n).toBe(1);
+    expect(Buffer.from(getSourcePdfBytes(db, id)!).equals(second)).toBe(true);
+  });
+
+  test('removes an orphaned PDF blob only after its last capture is deleted', () => {
+    const first = capture('SharedOne');
+    const second = capture('SharedTwo');
+    const pdf = Buffer.from('%PDF-1.4\nshared\n%%EOF');
+    attachSourcePdf(db, { captureId: first, bytes: pdf, sourceKind: 'direct' });
+    attachSourcePdf(db, { captureId: second, bytes: pdf, sourceKind: 'direct' });
+    db.exec('DELETE FROM captures WHERE id=?', [first]);
+    expect(db.query<{ n:number },[]>('SELECT count(*) n FROM pdf_blobs').get()?.n).toBe(1);
+    db.exec('DELETE FROM captures WHERE id=?', [second]);
+    expect(db.query<{ n:number },[]>('SELECT count(*) n FROM pdf_blobs').get()?.n).toBe(0);
   });
 });
 

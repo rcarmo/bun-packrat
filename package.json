@@ -1,7 +1,7 @@
 {
   "name": "bun-packrat",
-  "version": "0.1.0",
-  "description": "Single-file web archive: SQLite-backed, self-contained HTML, iOS Safari compatible",
+  "version": "0.2.0",
+  "description": "SQLite-backed web archive with canonical MHTML and byte-exact source PDF capture",
   "private": true,
   "type": "module",
   "main": "src/server.ts",
@@ -16,6 +16,7 @@
   "dependencies": {
     "@mozilla/readability": "^0.5.0",
     "linkedom": "^0.18.9",
+    "pdfjs-dist": "5.4.149",
     "playwright": "^1.50.0"
   },
   "devDependencies": {

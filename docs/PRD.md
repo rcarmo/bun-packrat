@@ -1,14 +1,14 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-16T14:40:00Z
+updated: 2026-08-18T11:30:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
 
 # Single-File Web Archive PRD
 
-A Bun service will replace ArchiveBox with a searchable web archive whose only persistent application store is SQLite. Each successful fresh capture stores Chromium's complete rendered page and loaded resources as canonical MHTML in the database. The service derives safe standalone HTML for browsers, including Safari on iOS, and derives article reading mode, Markdown, EPUB and PDF on demand.
+A Bun service replaces ArchiveBox with a searchable archive whose only persistent application store is SQLite. Web captures store Chromium's complete rendered page and loaded resources as canonical MHTML. Direct PDF responses are preserved byte-for-byte in deduplicated BLOBs and extracted with bounded PDF.js workers.
 
 ## Problem
 
@@ -36,7 +36,7 @@ The replacement needs one useful representation of each page, one database to ba
 - Reproduce every ArchiveBox extractor or preserve interactive application behaviour.
 - Use WARC or WACZ as the primary stored representation.
 - Run Python, Node.js, PostgreSQL, Redis, Elasticsearch or Sonic services.
-- Store rendered PDFs, screenshots or duplicate export files permanently.
+- Store rendered page-to-PDF exports, screenshots or duplicate export files permanently. Original source PDFs are retained.
 - Circumvent authentication, paywalls, CAPTCHAs or anti-bot controls.
 - Guarantee that scripts, video, audio, WebGL or server-side application state remain interactive.
 - Replace a forensic web-preservation system that requires byte-identical HTTP response archives.
@@ -183,6 +183,10 @@ Use WAL mode during normal operation. Backups must use SQLite's online backup AP
 | `attempts` | Bounded diagnostic history for each job |
 | `archivebox_imports` | Source snapshot ID, timestamp, paths, source hashes and migration outcome |
 | `captures_fts` | FTS5 index over title, URL, site, author and extracted text |
+| `pdf_blobs` | SHA-256-deduplicated byte-exact source PDF bytes |
+| `capture_pdfs` | Capture association and original-response provenance |
+| `pdf_extractions` | Bounded PDF.js status, text and warnings |
+| `archivebox_pdf_enrichment` | Independent resumable outcome for each ArchiveBox row |
 | `schema_migrations` | Applied database migrations |
 
 Large canonical bodies should be compressed before storage if tests show a material size reduction without unacceptable read latency. The compression algorithm and uncompressed SHA-256 belong in each capture row. The first implementation should compare SQLite-native raw BLOB storage with gzip and zstd before selecting a default.
@@ -271,6 +275,8 @@ archive backup <destination.sqlite>
 | `markdown-zip` | `application/zip` | Offline Markdown and local assets. |
 | `epub` | `application/epub+zip` | On-demand EPUB 3 article export. |
 | `pdf` | `application/pdf` | On-demand PDF of the safe full-page HTML. |
+| `source-pdf` | `application/pdf` | Byte-exact stored source PDF with `HEAD` and single-byte range delivery. |
+| `source-pdf-text` | `text/plain` | Bounded PDF.js extraction; empty for verified image-only PDFs. |
 
 Successful extraction responses include `X-Packrat-Capture-Id`, `X-Packrat-Content-Format`, `X-Packrat-Content-Hash`, `X-Packrat-Source-Url` and `X-Packrat-Final-Url`. Responses use `Cache-Control: no-store`. Binary and HTML responses use `Content-Disposition: attachment`; plain Markdown may be consumed inline. Unknown formats return `404`; missing or unsuccessful captures return `404`; a requested canonical format unavailable for a legacy capture returns `409`.
 
@@ -321,7 +327,7 @@ For each ArchiveBox snapshot, choose the first usable representation in this ord
 
 Original-response HTML with asset-tree conversion and WARC replay are not present in the rehearsed source collection and remain unsupported. They require explicit adapters before being added to the candidate order.
 
-A screenshot or PDF may help identify a source snapshot but is not sufficient for a successful content import. These files are not copied into the new database unless a later requirement explicitly adds them.
+ArchiveBox's generated screenshot and `pdf` extractor outputs are not imported. A later enrichment pass accepts only the successful original `wget` response when `headers.json` records `application/pdf`, the file begins `%PDF-`, and recorded length matches when present. Every ArchiveBox provenance row receives an independent terminal enrichment outcome.
 
 ### Validation and normalisation
 
@@ -415,7 +421,9 @@ Starting point: `rcarmo/bun-readlater-epub` (https://github.com/rcarmo/bun-readl
 
 ### PDF
 
-PDF is generated only when requested. Playwright applies print CSS and streams the result. The service does not retain the PDF after the response completes.
+Rendered page PDFs are generated only when requested. Playwright applies print CSS and streams the result without retaining it. Direct source PDFs are different: Packrat retains their exact bytes, validates `%PDF-`, deduplicates by SHA-256, supports inline/attachment `HEAD` and single-byte `Range` responses, and retains encrypted or image-only documents even when extraction cannot produce text.
+
+PDF.js runs in an isolated worker with defaults of 100 MiB per PDF, 60 seconds, 1,000 pages and 10 MiB of extracted UTF-8 text. Extraction failure never rolls back valid PDF storage. OCR and stored PDF passwords are out of scope.
 
 ## Runtime and dependencies
 

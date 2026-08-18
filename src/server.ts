@@ -4,10 +4,10 @@
  */
 
 import type { Database } from 'bun:sqlite';
-import type { PackratConfig, CaptureRow } from './types.js';
+import type { PackratConfig, CaptureMetadataRow } from './types.js';
 import {
   openDatabase, runMigrations,
-  getCaptureHtml, getCaptureById, listCaptures, searchCaptures,
+  getCaptureHtml, getCaptureById, getSourcePdfMetadata, getSourcePdfRange, getSourcePdfText, listCaptures, searchCaptures,
   getCaptureTags, addTagToCapture, listTags, getJobById, getJobAttempts,
   createJob, getCaptureAliases, updateCaptureNote, cancelJob,
   countCaptures, getCaptureDeleteImpact, deleteCapture,
@@ -22,6 +22,7 @@ import { INDEX_CLIENT_SCRIPT } from './index-client.js';
 import { exportEpub } from './export/epub.js';
 import { exportPdf } from './export/pdf.js';
 import { loadConfig } from './config.js';
+import { parseSingleByteRange } from './http/range.js';
 
 const config = loadConfig();
 if (!config.authDisabled && !config.authPassword) {
@@ -73,6 +74,7 @@ const server = Bun.serve({
       if (!acceptsHtml || url.searchParams.has('meta')) {
         return Response.json({ ...summariseCapture(capture), tags: getCaptureTags(db, id), aliases: getCaptureAliases(db, id), deleteImpact: getCaptureDeleteImpact(db, id) });
       }
+      if (capture.mode === 'pdf') return renderPdfCapture(db, capture);
       if (capture.mode === 'metadata_only') return renderMetadataOnlyCapture(db, capture);
       return serveCaptureHtml(db, id, false);
     }
@@ -94,8 +96,21 @@ const server = Bun.serve({
       return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1', sourceHref);
     }
 
-    const contentMatch = path.match(/^\/api\/captures\/(\d+)\/content\/(mhtml|html|article-html|markdown|markdown-zip|epub|pdf)$/);
-    if (method === 'GET' && contentMatch) {
+    const sourcePdfMatch = path.match(/^\/captures\/(\d+)\/source\.pdf$/);
+    if ((method === 'GET' || method === 'HEAD') && sourcePdfMatch) {
+      return serveSourcePdf(db, parseInt(sourcePdfMatch[1], 10), req, url.searchParams.has('download'));
+    }
+
+    const sourcePdfTextMatch = path.match(/^\/captures\/(\d+)\/source\.txt$/);
+    if ((method === 'GET' || method === 'HEAD') && sourcePdfTextMatch) {
+      return serveSourcePdfText(db, parseInt(sourcePdfTextMatch[1], 10), method === 'HEAD');
+    }
+
+    const contentMatch = path.match(/^\/api\/captures\/(\d+)\/content\/(mhtml|html|article-html|markdown|markdown-zip|epub|pdf|source-pdf|source-pdf-text)$/);
+    if ((method === 'GET' || method === 'HEAD') && contentMatch) {
+      if (contentMatch[2] === 'source-pdf') return serveSourcePdf(db, parseInt(contentMatch[1], 10), req, false);
+      if (contentMatch[2] === 'source-pdf-text') return serveSourcePdfText(db, parseInt(contentMatch[1], 10), method === 'HEAD');
+      if (method === 'HEAD') return new Response(null, { status: 405, headers: { Allow: 'GET' } });
       return handleApiContent(db, parseInt(contentMatch[1], 10), contentMatch[2], config);
     }
 
@@ -360,7 +375,7 @@ async function handleApiContent(
   return response;
 }
 
-function contentProvenanceHeaders(capture: CaptureRow, format: string): Record<string, string> {
+function contentProvenanceHeaders(capture: CaptureMetadataRow, format: string): Record<string, string> {
   return {
     'Cache-Control': 'no-store',
     'X-Packrat-Capture-Id': String(capture.id),
@@ -369,6 +384,81 @@ function contentProvenanceHeaders(capture: CaptureRow, format: string): Record<s
     'X-Packrat-Source-Url': encodeURI(capture.source_url),
     'X-Packrat-Final-Url': encodeURI(capture.final_url),
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Source PDF delivery
+// ────────────────────────────────────────────────────────────────────────────
+
+function serveSourcePdf(db: Database, id: number, req: Request, download: boolean): Response {
+  const pdf = getSourcePdfMetadata(db, id);
+  const capture = getCaptureById(db, id);
+  if (!pdf || !capture) return json404('Source PDF not found');
+  const baseHeaders: Record<string, string> = {
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'no-store',
+    'Content-Type': 'application/pdf',
+    'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename="${sourcePdfFilename(pdf.source_filename, id)}"`,
+    'ETag': `"sha256-${pdf.sha256}"`,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Packrat-Capture-Id': String(id),
+    'X-Packrat-Content-Format': 'source-pdf',
+    'X-Packrat-Content-Hash': pdf.sha256,
+    'X-Packrat-Source-Url': encodeURI(capture.source_url),
+    'X-Packrat-Final-Url': encodeURI(capture.final_url),
+  };
+  const range = req.headers.get('range');
+  if (!range) {
+    baseHeaders['Content-Length'] = String(pdf.byte_size);
+    if (req.method === 'HEAD') return new Response(null, { headers: baseHeaders });
+    return new Response(streamSourcePdf(db, id, pdf.byte_size), { headers: baseHeaders });
+  }
+  const parsed = parseSingleByteRange(range, pdf.byte_size);
+  if (!parsed) return new Response(null, { status: 416, headers: { ...baseHeaders, 'Content-Range': `bytes */${pdf.byte_size}` } });
+  const [start, end] = parsed;
+  baseHeaders['Content-Length'] = String(end - start + 1);
+  baseHeaders['Content-Range'] = `bytes ${start}-${end}/${pdf.byte_size}`;
+  if (req.method === 'HEAD') return new Response(null, { status: 206, headers: baseHeaders });
+  const bytes = getSourcePdfRange(db, id, start, end);
+  return bytes ? new Response(new Blob([Uint8Array.from(bytes).buffer]), { status: 206, headers: baseHeaders }) : json404('Source PDF not found');
+}
+
+function streamSourcePdf(db: Database, id: number, byteSize: number): ReadableStream<Uint8Array> {
+  const chunkSize = 1024 * 1024;
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= byteSize) { controller.close(); return; }
+      const end = Math.min(byteSize - 1, offset + chunkSize - 1);
+      const bytes = getSourcePdfRange(db, id, offset, end);
+      if (!bytes) { controller.error(new Error('Source PDF disappeared during delivery')); return; }
+      offset = end + 1;
+      controller.enqueue(bytes);
+    },
+  });
+}
+
+function serveSourcePdfText(db: Database, id: number, head: boolean): Response {
+  const text = getSourcePdfText(db, id);
+  if (!text) return json404('Source PDF not found');
+  if (!['succeeded', 'image_only'].includes(text.status)) {
+    return Response.json({ error: 'Extracted PDF text is unavailable', extractionStatus: text.status }, { status: 409 });
+  }
+  const headers = {
+    'Cache-Control': 'no-store',
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Disposition': `attachment; filename="capture-${id}.txt"`,
+    'Content-Length': String(Buffer.byteLength(text.text ?? '', 'utf8')),
+    'X-Content-Type-Options': 'nosniff',
+    'X-Packrat-Capture-Id': String(id),
+  };
+  return new Response(head ? null : text.text ?? '', { headers });
+}
+
+function sourcePdfFilename(value: string | null, id: number): string {
+  const name = value?.replace(/[^a-zA-Z0-9._ -]/g, '_').trim();
+  const withExtension = name && name.toLowerCase().endsWith('.pdf') ? name : name ? `${name}.pdf` : `capture-${id}.pdf`;
+  return withExtension.slice(0, 200);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -406,7 +496,22 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
   });
 }
 
-function renderMetadataOnlyCapture(db: Database, capture: CaptureRow): Response {
+function renderPdfCapture(db: Database, capture: CaptureMetadataRow): Response {
+  const pdf = getSourcePdfMetadata(db, capture.id);
+  if (!pdf) return json404('Source PDF not found');
+  const sourceHref = safeExternalHref(capture.source_url);
+  const textAction = pdf.extraction_status === 'succeeded' || pdf.extraction_status === 'image_only'
+    ? `<a href="/captures/${capture.id}/source.txt">Download extracted text</a>`
+    : `<span>Text extraction: ${esc(pdf.extraction_status.replace('_', ' '))}</span>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(capture.title ?? 'PDF capture')}</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif}nav{display:flex;flex-wrap:wrap;gap:1rem;padding:.75rem 1rem;background:#222;color:#fff}nav a{color:#9cf}iframe{display:block;width:100%;height:calc(100vh - 3rem);border:0}.status{padding:1rem}</style></head><body><nav><a href="/">Archive</a><strong>${esc(capture.title ?? 'PDF')}</strong><a href="/captures/${capture.id}/source.pdf?download=1">Download PDF</a>${textAction}${sourceHref ? `<a href="${esc(sourceHref)}" rel="noopener noreferrer">Original source</a>` : ''}</nav><iframe title="${esc(capture.title ?? 'Archived PDF')}" src="/captures/${capture.id}/source.pdf"></iframe></body></html>`;
+  return new Response(html, { headers: {
+    'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
+  }});
+}
+
+function renderMetadataOnlyCapture(db: Database, capture: CaptureMetadataRow): Response {
   const sourceHref = safeExternalHref(capture.source_url);
   const warnings = parseWarnings(capture.warnings);
   const tags = getCaptureTags(db, capture.id);
@@ -500,12 +605,17 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
     const sourceHref = safeExternalHref(c.source_url);
     const captureTags = getCaptureTags(db, c.id);
     const metadataOnly = c.mode === 'metadata_only';
-    const primaryHref = metadataOnly ? `/captures/${c.id}` : `/captures/${c.id}/article`;
+    const sourcePdf = c.mode === 'pdf';
+    const primaryHref = metadataOnly || sourcePdf ? `/captures/${c.id}` : `/captures/${c.id}/article`;
     const viewActions = metadataOnly
       ? `<a href="/captures/${c.id}">Metadata and provenance</a>`
-      : `<a href="/captures/${c.id}">Full page</a><a href="/captures/${c.id}/markdown">Markdown</a>`;
-    const downloadActions = metadataOnly ? '' : `<div class="item-menu-group"><span class="item-menu-label">Download</span><a class="download-link" href="/captures/${c.id}/export/html"><span aria-hidden="true">↓</span> HTML</a><a class="download-link" href="/captures/${c.id}/export/md"><span aria-hidden="true">↓</span> Markdown ZIP</a><a class="download-link" href="/captures/${c.id}/export/epub"><span aria-hidden="true">↓</span> EPUB</a><a class="download-link" href="/captures/${c.id}/export/pdf"><span aria-hidden="true">↓</span> PDF</a></div>`;
-    const exceptionalMode = metadataOnly ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : c.mode === 'article' ? 'Legacy article' : null;
+      : sourcePdf
+        ? `<a href="/captures/${c.id}">View PDF</a>${c.source_pdf_extraction_status === 'succeeded' || c.source_pdf_extraction_status === 'image_only' ? `<a href="/captures/${c.id}/source.txt">Extracted text</a>` : ''}`
+        : `<a href="/captures/${c.id}">Full page</a><a href="/captures/${c.id}/markdown">Markdown</a>`;
+    const downloadActions = metadataOnly ? '' : sourcePdf
+      ? `<div class="item-menu-group"><span class="item-menu-label">Download</span><a class="download-link" href="/captures/${c.id}/source.pdf?download=1"><span aria-hidden="true">↓</span> Source PDF</a>${c.source_pdf_extraction_status === 'succeeded' || c.source_pdf_extraction_status === 'image_only' ? `<a class="download-link" href="/captures/${c.id}/source.txt"><span aria-hidden="true">↓</span> Extracted text</a>` : ''}</div>`
+      : `<div class="item-menu-group"><span class="item-menu-label">Download</span><a class="download-link" href="/captures/${c.id}/export/html"><span aria-hidden="true">↓</span> HTML</a><a class="download-link" href="/captures/${c.id}/export/md"><span aria-hidden="true">↓</span> Markdown ZIP</a><a class="download-link" href="/captures/${c.id}/export/epub"><span aria-hidden="true">↓</span> EPUB</a><a class="download-link" href="/captures/${c.id}/export/pdf"><span aria-hidden="true">↓</span> PDF</a></div>`;
+    const exceptionalMode = sourcePdf ? 'Source PDF' : metadataOnly ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : c.mode === 'article' ? 'Legacy article' : null;
     const attribution = captureAttribution(c.author, c.site_name, getDomain(c.source_url));
     return `
     <li class="item">
@@ -672,24 +782,35 @@ function buildStatus(db: Database, queue: JobQueue) {
   };
 }
 
-function summariseCapture(c: any) {
+function summariseCapture(c: CaptureMetadataRow) {
   return {
     id: c.id, title: c.title, mode: c.mode, status: c.status,
     sourceUrl: c.source_url, finalUrl: c.final_url,
     capturedAt: c.captured_at, htmlSizeBytes: c.html_size,
     excerpt: c.excerpt, contentHash: c.content_hash,
+    sourcePdf: c.source_pdf_sha256 ? {
+      sha256: c.source_pdf_sha256,
+      sizeBytes: c.source_pdf_size,
+      extractionStatus: c.source_pdf_extraction_status,
+    } : null,
     author: c.author, siteName: c.site_name, publishedAt: c.published_at,
     warnings: parseWarnings(c.warnings), error: c.error, note: c.note,
     captureTool: c.capture_tool, captureDurationMs: c.capture_duration_ms,
   };
 }
 
-function summariseCaptureForApi(c: any) {
+function summariseCaptureForApi(c: CaptureMetadataRow) {
   const summary = summariseCapture(c);
   let formats: string[] = [];
-  if (c.status === 'succeeded') {
+  if (c.status === 'succeeded' && c.body_format) {
     formats = ['html', 'article-html', 'markdown', 'markdown-zip', 'epub', 'pdf'];
-    if (c.html && detectStoredCaptureFormat(readStoredCaptureBytes(c)) === 'mhtml') formats.unshift('mhtml');
+    if (c.body_format === 'mhtml') formats.unshift('mhtml');
+  }
+  if (c.status === 'succeeded' && c.source_pdf_sha256) {
+    formats.push('source-pdf');
+    if (c.source_pdf_extraction_status === 'succeeded' || c.source_pdf_extraction_status === 'image_only') {
+      formats.push('source-pdf-text');
+    }
   }
   return {
     ...summary,

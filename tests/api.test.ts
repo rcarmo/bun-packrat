@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Subprocess } from 'bun';
-import { getOrCreateUrl, insertCapture, openDatabase, runMigrations } from '../src/db/index.js';
+import { attachSourcePdf, getOrCreateUrl, insertCapture, openDatabase, runMigrations, savePdfExtraction } from '../src/db/index.js';
 
 const BOUNDARY = '----PackratApiFixture';
 const MHTML = [
@@ -30,6 +30,8 @@ let base: string;
 let server: Subprocess;
 let canonicalId: number;
 let legacyId: number;
+let sourcePdfId: number;
+let sourcePdfBytes: Buffer;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'packrat-api-test-'));
@@ -38,6 +40,11 @@ beforeAll(async () => {
   runMigrations(db);
   canonicalId = addCapture(db, 'https://example.com/canonical', 'Canonical API fixture', Buffer.from(MHTML), 'full_page');
   legacyId = addCapture(db, 'https://legacy.example.com/article', 'Legacy API fixture', Buffer.from(LEGACY_HTML), 'article');
+  const pdfUrl = getOrCreateUrl(db, 'https://example.com/source.pdf', 'https://example.com/source.pdf');
+  sourcePdfId = insertCapture(db, { url_id:pdfUrl.id,source_url:pdfUrl.original,final_url:pdfUrl.original,html:null,compression:'none',content_hash:null,html_size:null,title:'Source PDF fixture',author:null,site_name:null,published_at:null,excerpt:null,lang:'en',extracted_text:'Source PDF fixture text',mode:'pdf',status:'succeeded',capture_tool:'test/api',warnings:null });
+  sourcePdfBytes = Buffer.from('%PDF-1.4\nsource-api-fixture\n%%EOF\n');
+  attachSourcePdf(db, { captureId:sourcePdfId,bytes:sourcePdfBytes,sourceKind:'direct',sourceMime:'application/pdf',sourceFilename:'source.pdf' });
+  savePdfExtraction(db, sourcePdfId, { status:'succeeded',pageCount:1,text:'Extracted source PDF text',textBytes:25,textTruncated:false,warnings:[],error:null,extractor:'test' });
   db.close();
 
   const port = 35_000 + Math.floor(Math.random() * 10_000);
@@ -130,6 +137,36 @@ describe('agent capture API', () => {
       expect(response.status).toBe(200);
       expect(await response.text()).toContain(expectedLink);
     }
+  });
+
+  test('serves source PDFs inline or as attachments with HEAD and bounded single ranges', async () => {
+    const metadata = await fetch(`${base}/api/captures/${sourcePdfId}`).then((response) => response.json()) as any;
+    expect(metadata.availableFormats).toEqual(['source-pdf', 'source-pdf-text']);
+    expect(metadata.sourcePdf.sizeBytes).toBe(sourcePdfBytes.byteLength);
+
+    const head = await fetch(`${base}/captures/${sourcePdfId}/source.pdf`, { method:'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(sourcePdfBytes.byteLength));
+    expect(head.headers.get('accept-ranges')).toBe('bytes');
+    expect(head.headers.get('x-packrat-content-format')).toBe('source-pdf');
+    expect(head.headers.get('x-packrat-source-url')).toContain('example.com/source.pdf');
+    expect(await head.text()).toBe('');
+
+    const range = await fetch(`${base}/captures/${sourcePdfId}/source.pdf`, { headers:{ Range:'bytes=5-11' } });
+    expect(range.status).toBe(206);
+    expect(range.headers.get('content-range')).toBe(`bytes 5-11/${sourcePdfBytes.byteLength}`);
+    expect(await range.text()).toBe('1.4\nsou');
+    expect((await fetch(`${base}/captures/${sourcePdfId}/source.pdf`, { headers:{ Range:'bytes=0-1,3-4' } })).status).toBe(416);
+
+    const download = await fetch(`${base}/captures/${sourcePdfId}/source.pdf?download=1`);
+    expect(download.headers.get('content-disposition')).toContain('attachment');
+    expect(Buffer.from(await download.arrayBuffer()).equals(sourcePdfBytes)).toBe(true);
+    const text = await fetch(`${base}/captures/${sourcePdfId}/source.txt`);
+    expect(text.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(await text.text()).toBe('Extracted source PDF text');
+    const page = await fetch(`${base}/captures/${sourcePdfId}`, { headers:{ Accept:'text/html' } }).then((response) => response.text());
+    expect(page).toContain(`/captures/${sourcePdfId}/source.pdf`);
+    expect(page).toContain('Download PDF');
   });
 
   test('extracts every native format and preserves legacy availability semantics', async () => {

@@ -97,12 +97,14 @@ The `confirm` value must be the capture ID as a string or the JSON value `true`.
 
 | Route | Response |
 |---|---|
-| `GET /captures/:id` | Safe offline full-page HTML. |
+| `GET /captures/:id` | Safe offline full-page HTML, or the source-PDF viewer for PDF captures. |
 | `GET /captures/:id/article` | Simplified offline Article view with captured images. |
 | `GET /captures/:id/markdown` | Server-rendered Markdown with remote images disabled by default. |
 | `GET /captures/:id/markdown?remote=1` | Markdown view with original remote images enabled. |
 | `GET /captures/:id/markdown.raw` | Raw Markdown with original image URLs. |
 | `GET /captures/:id?raw=1` | Canonical MHTML attachment for fresh captures; stored HTML for legacy captures. |
+| `GET|HEAD /captures/:id/source.pdf` | Inline byte-exact source PDF with single-byte `Range` support. Add `?download=1` for attachment disposition. |
+| `GET|HEAD /captures/:id/source.txt` | Extracted source-PDF text. Encrypted or failed extraction returns `409`. |
 
 Capture rows show the source domain, capture date, canonical body size and author or site when available. Storage mode appears only for exceptional records such as metadata-only, imported or legacy article captures. Asset counts are not computed while rendering the list.
 
@@ -127,6 +129,8 @@ GET /api/captures/:id/content/:format
 | `markdown-zip` | `application/zip` | Offline Markdown, metadata and local assets. |
 | `epub` | `application/epub+zip` | On-demand EPUB 3. |
 | `pdf` | `application/pdf` | On-demand PDF of safe full-page HTML. |
+| `source-pdf` | `application/pdf` | Stored byte-exact source PDF; supports `HEAD` and one byte range. |
+| `source-pdf-text` | `text/plain` | Bounded PDF.js text extraction. |
 
 Successful responses include:
 
@@ -173,6 +177,17 @@ GET /bookmarklet.js
 ```
 
 The status response reports capture counts, queue depth, active workers, capture duration, import counts and database size.
+
+## ArchiveBox source-PDF enrichment
+
+After the HTML migration, enrich only verified original PDF responses:
+
+```bash
+bun run src/cli/index.ts import archivebox-pdfs --data-root /srv/archivebox/data
+bun run src/cli/index.ts import archivebox-pdfs --data-root /srv/archivebox/data --verify-only
+```
+
+The classifier requires one successful `wget` output, one successful `headers` output reporting `application/pdf`, a `%PDF-` signature and a matching recorded `Content-Length` when present. ArchiveBox's generated `pdf` extractor output is ignored. Every provenance row receives an independent, resumable enrichment outcome.
 
 Save the bookmarklet payload as:
 

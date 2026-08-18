@@ -6,6 +6,7 @@
  * Commands:
  *   capture <url>                   Capture a URL (blocking)
  *   import archivebox --data-root   Import or inventory ArchiveBox
+ *   import archivebox-pdfs          Enrich verified original PDF responses
  *   import status                   Inspect ArchiveBox import outcomes
  *   search  <query>                 Full-text search
  *   list    [--limit N]             List recent captures
@@ -27,6 +28,7 @@ import { exportEpub } from '../export/epub.js';
 import { exportPdf } from '../export/pdf.js';
 import { loadConfig } from '../config.js';
 import { importArchiveBox } from '../import/archivebox.js';
+import { enrichArchiveBoxPdfs } from '../import/archivebox-pdf.js';
 
 const config = loadConfig();
 const args = process.argv.slice(2);
@@ -65,6 +67,29 @@ switch (command) {
   // ── import ───────────────────────────────────────────────────────────────
   case 'import': {
     const subcommand = args[1];
+    if (subcommand === 'archivebox-pdfs') {
+      const dataRoot = optionValue(args, '--data-root');
+      if (!dataRoot) { console.error('Usage: packrat import archivebox-pdfs --data-root <path> [--verify-only|--retry-failed]'); process.exit(1); }
+      try {
+        const report = await enrichArchiveBoxPdfs(db, {
+          dataRoot,
+          sourceDatabase: optionValue(args, '--database') ?? undefined,
+          maxPdfBytes: config.maxPdfSizeBytes,
+          extractionTimeoutMs: config.pdfExtractionTimeoutMs,
+          maxPages: config.maxPdfPages,
+          maxTextBytes: config.maxPdfTextBytes,
+          limit: optionValue(args, '--limit') ? boundedInt(optionValue(args, '--limit'), 0, 1, Number.MAX_SAFE_INTEGER) : undefined,
+          retryFailed: args.includes('--retry-failed'),
+          verifyOnly: args.includes('--verify-only'),
+        });
+        console.log(JSON.stringify(report, null, 2));
+        if (!report.ok) process.exitCode = 1;
+      } catch (err: any) {
+        console.error(JSON.stringify({ ok: false, error: err?.message ?? String(err) }, null, 2));
+        process.exit(1);
+      }
+      break;
+    }
     if (subcommand === 'status') {
       const outcomes = db.query<{ outcome: string | null; count: number }, []>('SELECT outcome,count(*) count FROM archivebox_imports GROUP BY outcome ORDER BY outcome').all();
       const recentFailures = db.query<any, []>("SELECT ab_id,ab_url,ab_timestamp,outcome_detail,processed_at FROM archivebox_imports WHERE outcome='failed' ORDER BY processed_at DESC LIMIT 20").all();
@@ -72,7 +97,7 @@ switch (command) {
       break;
     }
     if (subcommand !== 'archivebox') {
-      console.error('Usage: packrat import archivebox --data-root <path> [--database <index.sqlite3>] [--dry-run|--verify-only]');
+      console.error('Usage: packrat import archivebox|archivebox-pdfs --data-root <path> [--database <index.sqlite3>] [--dry-run|--verify-only]');
       process.exit(1);
     }
     const dataRoot = optionValue(args, '--data-root');
