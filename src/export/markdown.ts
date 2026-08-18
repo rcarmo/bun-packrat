@@ -113,12 +113,20 @@ function buildZip(entries: ZipEntry[]): Uint8Array {
 // HTML → Markdown walker
 // ---------------------------------------------------------------------------
 
+export interface MarkdownAsset {
+  name: string;
+  mime: string;
+  data: Uint8Array;
+}
+
 export function htmlToMarkdown(html: string, opts: {
   remoteImages?: Array<{ originalUrl: string | null; alt: string; title: string | null }>;
   baseUrl?: string;
-} = {}): { markdown: string; assets: Array<{ name: string; data: Uint8Array }> } {
+  archivedImageBase?: string;
+} = {}): { markdown: string; assets: MarkdownAsset[]; remoteImageCount: number } {
   const { document } = parseHTML(html);
-  const assets: Array<{ name: string; data: Uint8Array }> = [];
+  const assets: MarkdownAsset[] = [];
+  let remoteImageCount = 0;
   let assetIndex = 0;
   let imageIndex = 0;
 
@@ -177,29 +185,33 @@ export function htmlToMarkdown(html: string, opts: {
         const alt = node.getAttribute('alt') ?? '';
         const title = node.getAttribute('title') ?? '';
         const remote = opts.remoteImages?.[imageIndex++];
-        if (opts.remoteImages?.length) {
-          const remoteAlt = escapeMarkdownText(remote?.alt ?? alt);
-          if (!remote?.originalUrl) return remoteAlt ? `*[Image: ${remoteAlt}]*` : '';
+        const embedded = parseImageDataUrl(src);
+        if (embedded && opts.archivedImageBase) {
+          const name = `img-${assetIndex}.${mimeToExt(embedded.mime)}`;
+          const bytes = new Uint8Array(embedded.bytes);
+          assets.push({ name, mime: embedded.mime, data: bytes });
+          const destination = `${opts.archivedImageBase}/${assetIndex++}`;
+          return `![${escapeMarkdownText(remote?.alt ?? alt)}](${destination}${(remote?.title ?? title) ? ` "${(remote?.title ?? title).replace(/"/g, '\\"')}"` : ''})`;
+        }
+        if (remote) {
+          const remoteAlt = escapeMarkdownText(remote.alt ?? alt);
+          if (!remote.originalUrl) return remoteAlt ? `*[Image: ${remoteAlt}]*` : '';
+          remoteImageCount++;
           const remoteTitle = remote.title ? ` "${remote.title.replace(/"/g, '\\"')}"` : '';
           return `![${remoteAlt}](${formatMarkdownDestination(remote.originalUrl)}${remoteTitle})`;
         }
         const linkedOriginal = resolveHttpUrl(node.closest?.('a')?.getAttribute('href') ?? '', opts.baseUrl);
         const sourceOriginal = resolveHttpUrl(src, opts.baseUrl);
         const original = linkedOriginal ?? sourceOriginal;
-        if (original) return `![${escapeMarkdownText(alt)}](${formatMarkdownDestination(original)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
-        if (src.startsWith('data:')) {
-          // Extract data: URL asset
-          const match = src.match(/^data:([^;]+);base64,(.+)$/s);
-          if (match) {
-            const mime = match[1];
-            const ext = mimeToExt(mime);
-            const name = `img-${assetIndex++}.${ext}`;
-            const bytes = Buffer.from(match[2], 'base64');
-            assets.push({ name, data: new Uint8Array(bytes) });
-            return `![${escapeMarkdownText(alt)}](assets/${name}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
-          }
+        if (original) {
+          remoteImageCount++;
+          return `![${escapeMarkdownText(alt)}](${formatMarkdownDestination(original)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
         }
-        if (src) return `![${escapeMarkdownText(alt)}](${formatMarkdownDestination(src)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+        if (embedded) {
+          const name = `img-${assetIndex++}.${mimeToExt(embedded.mime)}`;
+          assets.push({ name, mime: embedded.mime, data: new Uint8Array(embedded.bytes) });
+          return `![${escapeMarkdownText(alt)}](assets/${name}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
+        }
         return '';
       }
       case 'ul': {
@@ -258,7 +270,14 @@ export function htmlToMarkdown(html: string, opts: {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-  return { markdown, assets };
+  return { markdown, assets, remoteImageCount };
+}
+
+function parseImageDataUrl(value: string): { mime: string; bytes: Buffer } | null {
+  const match = value.match(/^data:(image\/(?:avif|bmp|gif|jpeg|jpg|png|webp|x-icon));base64,([a-z0-9+/=\s]+)$/i);
+  if (!match) return null;
+  const bytes = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+  return bytes.length ? { mime: match[1].toLowerCase(), bytes } : null;
 }
 
 function escapeMarkdownTableCell(value: string): string {
@@ -288,7 +307,7 @@ function formatMarkdownDestination(value: string): string {
 function mimeToExt(mime: string): string {
   const map: Record<string, string> = {
     'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
-    'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg',
+    'image/gif': 'gif', 'image/webp': 'webp', 'image/x-icon': 'ico',
     'image/avif': 'avif', 'image/bmp': 'bmp',
   };
   return map[mime.toLowerCase()] ?? 'bin';
@@ -298,18 +317,19 @@ function mimeToExt(mime: string): string {
 // Public export
 // ---------------------------------------------------------------------------
 
-export async function renderRemoteMarkdown(db: Database, captureId: number): Promise<{ markdown: string; title: string } | null> {
+export async function renderRemoteMarkdown(db: Database, captureId: number, opts: { archivedImageBase?: string } = {}): Promise<{ markdown: string; title: string; assets: MarkdownAsset[]; remoteImageCount: number } | null> {
   const meta = getCaptureById(db, captureId);
   if (!meta || meta.status !== 'succeeded') return null;
   const row = getCaptureHtml(db, captureId);
   if (!row?.html) return null;
   const articleHtml = deriveStoredArticleHtml(row, meta.final_url);
   const imageSources = getCaptureImageSources(db, captureId);
-  const { markdown } = htmlToMarkdown(articleHtml, {
+  const { markdown, assets, remoteImageCount } = htmlToMarkdown(articleHtml, {
     remoteImages: imageSources.length ? imageSources : undefined,
     baseUrl: meta.final_url,
+    archivedImageBase: opts.archivedImageBase,
   });
-  return { markdown, title: meta.title ?? `capture-${captureId}` };
+  return { markdown, title: meta.title ?? `capture-${captureId}`, assets, remoteImageCount };
 }
 
 export async function exportMarkdownZip(

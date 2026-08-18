@@ -198,6 +198,30 @@ describe('agent capture API', () => {
     expect((await fetch(`${base}/api/captures/999999/tags`)).status).toBe(404);
   });
 
+  test('serves images stored in a capture to the Markdown reading view', async () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    const body = Buffer.from(`<html><body><div class="packrat-content"><h1>Local image</h1><p>Stored image body.</p><img src="data:image/png;base64,${png.toString('base64')}" alt="Stored pixel"></div></body></html>`);
+    const writeDb = openDatabase(dbPath);
+    const id = addCapture(writeDb, 'https://example.com/local-image', 'Local image', body, 'article');
+    writeDb.close();
+
+    const page = await fetch(`${base}/captures/${id}/markdown`).then((response) => response.text());
+    expect(page).toContain(`src="/captures/${id}/images/0"`);
+    expect(page).toContain('Showing 1 image stored inside this capture.');
+    expect(page).not.toContain('Enable remote images');
+    const image = await fetch(`${base}/captures/${id}/images/0`);
+    expect(image.status).toBe(200);
+    expect(image.headers.get('content-type')).toBe('image/png');
+    expect(image.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(Buffer.from(await image.arrayBuffer()).equals(png)).toBe(true);
+    const head = await fetch(`${base}/captures/${id}/images/0`, { method:'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(png.byteLength));
+    expect((await fetch(`${base}/captures/${id}/images/1`)).status).toBe(404);
+    expect((await fetch(`${base}/api/captures/${id}`, { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({confirm:String(id)}) })).status).toBe(200);
+    expect((await fetch(`${base}/captures/${id}/images/0`)).status).toBe(404);
+  });
+
   test('serves source PDFs inline or as attachments with HEAD and bounded single ranges', async () => {
     const metadata = await fetch(`${base}/api/captures/${sourcePdfId}`).then((response) => response.json()) as any;
     expect(metadata.availableFormats).toEqual(['source-pdf', 'source-pdf-text']);

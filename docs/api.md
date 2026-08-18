@@ -184,6 +184,17 @@ GET /bookmarklet.js
 
 `/api/status` is the machine-readable status response. It reports capture counts, queue depth, active workers, capture duration, import counts and database size.
 
+## Markdown reading images
+
+The HTML Markdown reader at `GET /captures/:id/markdown` uses images already stored inside the canonical HTML or MHTML capture without contacting the original host. Stored images are exposed through authenticated, same-origin URLs:
+
+```text
+GET  /captures/:id/images/:index
+HEAD /captures/:id/images/:index
+```
+
+The route returns only validated image MIME types with `nosniff`; it does not change the canonical capture bytes. Images absent from the archive remain blocked unless the reader explicitly enables remote images for that view.
+
 ## ArchiveBox source-PDF enrichment
 
 After the HTML migration, enrich only verified original PDF responses:

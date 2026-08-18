@@ -14,7 +14,7 @@ import {
 } from './db/index.js';
 import { JobQueue } from './queue/index.js';
 import { exportHtml, slugify } from './export/html.js';
-import { exportMarkdownZip, renderRemoteMarkdown } from './export/markdown.js';
+import { exportMarkdownZip, renderRemoteMarkdown, type MarkdownAsset } from './export/markdown.js';
 import { renderMarkdownHtml } from './export/render-markdown.js';
 import { resolveCaptureIndexPage } from './index-page.js';
 import { deriveStoredArticleHtml, detectStoredCaptureFormat, readStoredCaptureBytes, renderStoredCaptureHtml } from './capture/canonical.js';
@@ -30,6 +30,9 @@ if (!config.authDisabled && !config.authPassword) {
 }
 const db = openDatabase(config.dbPath);
 runMigrations(db);
+
+const markdownAssetCache = new Map<number, { assets: MarkdownAsset[]; bytes: number; touchedAt: number }>();
+const MAX_MARKDOWN_ASSET_CACHE_BYTES = 32 * 1024 * 1024;
 
 // Start job queue
 const queue = new JobQueue({ db, config });
@@ -84,16 +87,22 @@ const server = Bun.serve({
       return serveArticleHtml(db, parseInt(articleMatch[1], 10));
     }
 
+    const markdownImageMatch = path.match(/^\/captures\/(\d+)\/images\/(\d+)$/);
+    if ((method === 'GET' || method === 'HEAD') && markdownImageMatch) {
+      return serveMarkdownImage(db, parseInt(markdownImageMatch[1], 10), parseInt(markdownImageMatch[2], 10), method === 'HEAD');
+    }
+
     const markdownMatch = path.match(/^\/captures\/(\d+)\/markdown(\.raw)?$/);
     if (method === 'GET' && markdownMatch) {
       const id = parseInt(markdownMatch[1], 10);
-      const rendered = await renderRemoteMarkdown(db, id);
+      const rendered = await renderRemoteMarkdown(db, id, { archivedImageBase:`/captures/${id}/images` });
       if (!rendered) return json404('Capture not found or not yet succeeded');
+      rememberMarkdownAssets(id, rendered.assets);
       if (markdownMatch[2]) {
         return new Response(rendered.markdown, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } });
       }
       const sourceHref = safeExternalHref(getCaptureById(db, id)?.source_url ?? '');
-      return renderMarkdownView(id, rendered.title, rendered.markdown, url.searchParams.get('remote') === '1', sourceHref);
+      return renderMarkdownView(id, rendered.title, rendered.markdown, rendered.assets.length, rendered.remoteImageCount, url.searchParams.get('remote') === '1', sourceHref);
     }
 
     const sourcePdfMatch = path.match(/^\/captures\/(\d+)\/source\.pdf$/);
@@ -209,6 +218,7 @@ const server = Bun.serve({
           return Response.json({ error: 'Explicit deletion confirmation is required', impact: getCaptureDeleteImpact(db, id) }, { status: 409 });
         }
         const result = deleteCapture(db, id);
+        if (result) markdownAssetCache.delete(id);
         return result ? Response.json({ ok: true, ...result }) : json404('Capture not found');
       }
     }
@@ -945,16 +955,59 @@ function captureQueryOptions(url: URL, limit: number, offset: number) {
   } as const;
 }
 
-function renderMarkdownView(id: number, title: string, markdown: string, remoteImages: boolean, sourceHref: string | null): Response {
+function renderMarkdownView(id: number, title: string, markdown: string, archivedImageCount: number, remoteImageCount: number, remoteImages: boolean, sourceHref: string | null): Response {
   const content = renderMarkdownHtml(markdown, remoteImages);
   const enableHref = `/captures/${id}/markdown?remote=1`;
   const sourceLink = sourceHref ? ` · ${renderOriginalLink(sourceHref)}` : '';
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning{font:14px system-ui,sans-serif}.warning{padding:.8rem;background:var(--notice-bg);color:var(--notice-fg);border:1px solid var(--notice-border);border-radius:4px}.warning a{color:inherit;font-weight:700}img{max-width:100%;height:auto}main{min-width:0}pre{max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}p,li,blockquote,figcaption{overflow-wrap:anywhere;word-break:break-word}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}.table-scroll{max-width:100%;margin:1.5rem 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px}table{width:100%;min-width:36rem;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.55rem .7rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th:last-child,td:last-child{border-right:0}tbody tr:last-child td{border-bottom:0}th{background:var(--surface);font-weight:600}tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 55%,transparent)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a>${sourceLink}</nav>${remoteImages ? '<p class="warning">Remote images are enabled. This view contacts the original image hosts.</p>' : `<p class="warning">Remote images are disabled. Enabling them contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable for this view</a></p>`}<main>${content}</main></body></html>`;
+  const archivedNotice = archivedImageCount ? `<p class="archive-notice">Showing ${archivedImageCount} image${archivedImageCount === 1 ? '' : 's'} stored inside this capture.</p>` : '';
+  const remoteNotice = remoteImageCount === 0 ? '' : remoteImages
+    ? `<p class="warning">${remoteImageCount} image${remoteImageCount === 1 ? '' : 's'} missing from the archive ${remoteImageCount === 1 ? 'is' : 'are'} loaded from the original host.</p>`
+    : `<p class="warning">${remoteImageCount} image${remoteImageCount === 1 ? '' : 's'} ${remoteImageCount === 1 ? 'was' : 'were'} not stored in this capture. Loading ${remoteImageCount === 1 ? 'it' : 'them'} contacts the original hosts and may disclose your IP address and browser headers. <a href="${enableHref}">Enable remote images for this view</a></p>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} — Markdown</title><style>:root{color-scheme:light;--bg:#fff;--surface:#f4f5f7;--fg:#202124;--muted:#5f6368;--border:#c7cbd1;--accent:#0057b7;--notice-bg:#fff4ce;--notice-fg:#4f3b00;--notice-border:#b88a00;--archive-bg:#dafbe1;--archive-fg:#116329;--archive-border:#4ac26b}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151617;--surface:#252729;--fg:#f1f3f4;--muted:#bdc1c6;--border:#62666b;--accent:#8fc5ff;--notice-bg:#403711;--notice-fg:#fff2b2;--notice-border:#ad8b16;--archive-bg:#12361f;--archive-fg:#7ee787;--archive-border:#238636}}*{box-sizing:border-box}body{max-width:760px;margin:auto;padding:1rem;background:var(--bg);color:var(--fg);font:17px/1.6 Georgia,serif}a{color:var(--accent)}nav,.warning,.archive-notice{font:14px system-ui,sans-serif}.warning,.archive-notice{padding:.8rem;border:1px solid;border-radius:4px}.warning{background:var(--notice-bg);color:var(--notice-fg);border-color:var(--notice-border)}.warning a{color:inherit;font-weight:700}.archive-notice{background:var(--archive-bg);color:var(--archive-fg);border-color:var(--archive-border)}img{display:block;max-width:100%;height:auto;margin:1.5rem auto}main{min-width:0}pre{max-width:100%;overflow:auto;background:var(--surface);border:1px solid var(--border);padding:1rem}code{background:var(--surface)}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}p,li,blockquote,figcaption{overflow-wrap:anywhere;word-break:break-word}.image-placeholder{display:block;padding:1rem;background:var(--surface);color:var(--muted);border:1px solid var(--border)}.table-scroll{max-width:100%;margin:1.5rem 0;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px}table{width:100%;min-width:36rem;border-collapse:collapse;font:14px/1.45 system-ui,sans-serif}th,td{padding:.55rem .7rem;border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;vertical-align:top}th:last-child,td:last-child{border-right:0}tbody tr:last-child td{border-bottom:0}th{background:var(--surface);font-weight:600}tbody tr:nth-child(even){background:color-mix(in srgb,var(--surface) 55%,transparent)}</style></head><body><nav><a href="/captures/${id}">Archived HTML</a> · <strong>Markdown</strong> · <a href="/captures/${id}/markdown.raw">Raw Markdown</a>${sourceLink}</nav>${archivedNotice}${remoteNotice}<main>${content}</main></body></html>`;
   return new Response(html, { headers: {
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
-    'Content-Security-Policy': remoteImages ? "default-src 'none'; style-src 'unsafe-inline'; img-src https: http:; base-uri 'none'; frame-ancestors 'none'" : "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': remoteImages ? "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https: http:; base-uri 'none'; frame-ancestors 'none'" : "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff',
   }});
+}
+
+async function serveMarkdownImage(db: Database, captureId: number, index: number, head: boolean): Promise<Response> {
+  if (!Number.isSafeInteger(index) || index < 0) return json404('Archived image not found');
+  const capture = getCaptureById(db, captureId);
+  if (!capture || capture.status !== 'succeeded') {
+    markdownAssetCache.delete(captureId);
+    return json404('Archived image not found');
+  }
+  let cached = markdownAssetCache.get(captureId);
+  let uncachedAssets: MarkdownAsset[] | null = null;
+  if (!cached) {
+    const rendered = await renderRemoteMarkdown(db, captureId, { archivedImageBase:`/captures/${captureId}/images` });
+    if (!rendered) return json404('Capture not found or not yet succeeded');
+    uncachedAssets = rendered.assets;
+    rememberMarkdownAssets(captureId, rendered.assets);
+    cached = markdownAssetCache.get(captureId);
+  }
+  const asset = cached?.assets[index] ?? uncachedAssets?.[index];
+  if (!asset || !/^image\/(?:avif|bmp|gif|jpeg|jpg|png|webp|x-icon)$/i.test(asset.mime)) return json404('Archived image not found');
+  if (cached) cached.touchedAt = Date.now();
+  return new Response(head ? null : new Blob([Uint8Array.from(asset.data).buffer]), { headers: {
+    'Content-Type': asset.mime, 'Content-Length': String(asset.data.byteLength),
+    'Cache-Control': 'private, max-age=86400, immutable', 'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "default-src 'none'; sandbox",
+  }});
+}
+
+function rememberMarkdownAssets(captureId: number, assets: MarkdownAsset[]): void {
+  markdownAssetCache.delete(captureId);
+  const bytes = assets.reduce((sum, asset) => sum + asset.data.byteLength, 0);
+  if (bytes > MAX_MARKDOWN_ASSET_CACHE_BYTES) return;
+  markdownAssetCache.set(captureId, { assets, bytes, touchedAt:Date.now() });
+  let total = Array.from(markdownAssetCache.values()).reduce((sum, item) => sum + item.bytes, 0);
+  while (total > MAX_MARKDOWN_ASSET_CACHE_BYTES && markdownAssetCache.size > 1) {
+    const oldest = Array.from(markdownAssetCache.entries()).sort((a, b) => a[1].touchedAt - b[1].touchedAt)[0];
+    markdownAssetCache.delete(oldest[0]);
+    total -= oldest[1].bytes;
+  }
 }
 
 function parseWarnings(value: string | null): string[] {

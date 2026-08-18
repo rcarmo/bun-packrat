@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, updateLatestCapture, createJob, getCaptureById, getCaptureDeleteImpact, deleteCapture, setCaptureImageSources, countCaptures, listCaptures, addTagToCapture, listTags } from '../src/db/index.js';
-import { renderRemoteMarkdown } from '../src/export/markdown.js';
+import { htmlToMarkdown, renderRemoteMarkdown } from '../src/export/markdown.js';
 import { renderMarkdownHtml } from '../src/export/render-markdown.js';
 import { resolveCaptureIndexPage } from '../src/index-page.js';
 import { INDEX_CLIENT_SCRIPT } from '../src/index-client.js';
@@ -99,19 +99,29 @@ describe('sorting and paging primitives', () => {
 });
 
 describe('Markdown reading mode', () => {
-  test('uses original image URLs and safely gates rendered remote images', async () => {
+  test('uses archived images locally and safely gates only missing remote images', async () => {
     const capture = add('https://example.com/a', 'Markdown');
     setCaptureImageSources(db, capture.id, [{ order:0, originalUrl:'https://images.example.com/diagram.png', alt:'Diagram', title:'Architecture', width:null, height:null }]);
     db.exec("UPDATE captures SET html=? WHERE id=?", [Buffer.from('<html><body><header class=\"packrat-header\">Archive metadata must not leak</header><div class=\"packrat-content\"><h1>Markdown</h1><p>Body text</p><img src=\"data:image/png;base64,AA==\" alt=\"Diagram\"></div></body></html>'), capture.id]);
-    const result = await renderRemoteMarkdown(db, capture.id);
-    expect(result?.markdown).toContain('![Diagram](https://images.example.com/diagram.png "Architecture")');
+    const result = await renderRemoteMarkdown(db, capture.id, { archivedImageBase:`/captures/${capture.id}/images` });
+    expect(result?.markdown).toContain(`![Diagram](/captures/${capture.id}/images/0 "Architecture")`);
     expect(result?.markdown).not.toContain('Archive metadata must not leak');
     expect(result?.markdown).not.toContain('data:image');
-    expect(renderMarkdownHtml(result!.markdown, false)).toContain('<span class="image-placeholder"');
-    expect(renderMarkdownHtml(result!.markdown, false)).toContain('>Diagram</span>');
-    expect(renderMarkdownHtml(result!.markdown, false)).not.toContain('[Image:');
-    expect(renderMarkdownHtml(result!.markdown, false)).not.toContain('<img');
-    expect(renderMarkdownHtml(result!.markdown, true)).toContain('<img src="https://images.example.com/diagram.png"');
+    expect(result?.assets).toHaveLength(1);
+    expect(result?.assets[0].mime).toBe('image/png');
+    expect(result?.remoteImageCount).toBe(0);
+    expect(renderMarkdownHtml(result!.markdown, false)).toContain(`<img src="/captures/${capture.id}/images/0"`);
+    expect(renderMarkdownHtml(result!.markdown, false)).not.toContain('image-placeholder');
+  });
+
+  test('falls back to an image source when provenance metadata is shorter than the article', () => {
+    const result = htmlToMarkdown('<html><body><div class="packrat-content"><img src="https://one.example/a.png" alt="One"><img src="https://two.example/b.png" alt="Two"></div></body></html>', {
+      remoteImages:[{ originalUrl:'https://one.example/a.png', alt:'One', title:null }],
+      baseUrl:'https://example.com/article',
+    });
+    expect(result.markdown).toContain('![One](https://one.example/a.png)');
+    expect(result.markdown).toContain('![Two](https://two.example/b.png)');
+    expect(result.remoteImageCount).toBe(2);
   });
 
   test('keeps ordinary raw Markdown links readable', async () => {

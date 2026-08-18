@@ -84,6 +84,8 @@ function parseTableRow(line: string): string[] {
 
 function inline(text: string, remoteImages: boolean): string {
   let value = text;
+  value = value.replace(/!\[([^\]]*)\]\((\/captures\/\d+\/images\/\d+)(?:\s+&quot;((?:(?!&quot;).)*)&quot;)?\)/g,
+    (_m, alt, url, title) => `<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ''} loading="lazy">`);
   value = value.replace(/!\[([^\]]*)\]\((?:&lt;(https?:\/\/.*?)&gt;|(https?:\/\/[^\s)]+))(?:\s+&quot;((?:(?!&quot;).)*)&quot;)?\)/g,
     (_m, alt, bracketedUrl, plainUrl, title) => {
       const url = bracketedUrl || plainUrl;

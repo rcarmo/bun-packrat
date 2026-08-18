@@ -144,7 +144,7 @@ export function assembleHtml(bodyHtml: string, opts: AssembleOptions): string {
   const lang = opts.lang ?? 'en';
   const captured = opts.capturedAt;
   const mode = opts.mode;
-  const tool = opts.captureTool ?? 'packrat/0.2.6';
+  const tool = opts.captureTool ?? 'packrat/0.2.7';
 
   const authorPart = opts.author
     ? `<span class="label">By</span> ${escapeHtml(opts.author)}`
