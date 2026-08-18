@@ -34,6 +34,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Type-check
         run: bun run typecheck
+      - name: Install Chromium for browser tests
+        run: bunx playwright install --with-deps chromium
       - name: Test
         run: bun test
 
