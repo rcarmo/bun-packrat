@@ -1,6 +1,6 @@
 # Testing
 
-Packrat uses the Bun test runner and TypeScript's no-emit type check. The current suite contains 128 tests across 14 files.
+Packrat uses the Bun test runner and TypeScript's no-emit type check. The `v0.2.7` gate contains 156 tests across 16 files.
 
 ## Full gate
 
@@ -18,6 +18,7 @@ The EPUB suite calls `epubcheck` when it is installed. The compliance test skips
 |---|---|
 | `tests/api.test.ts` | Search and content HTTP API. |
 | `tests/archivebox-import.test.ts` | Read-only inventory, offline conversion, fallback, resumption and deduplication. |
+| `tests/archivebox-pdf.test.ts` | Original-PDF classification, enrichment, verification and resumption. |
 | `tests/assets.test.ts` | Link normalisation, image selection and tracking-pixel removal. |
 | `tests/canonical.test.ts` | MHTML detection, MIME decoding and safe rendering. |
 | `tests/db.test.ts` | Schema, migrations and database helpers. |
@@ -25,6 +26,7 @@ The EPUB suite calls `epubcheck` when it is installed. The compliance test skips
 | `tests/features.test.ts` | Deletion, pagination, index actions and Markdown provenance. |
 | `tests/markdown.test.ts` | Markdown conversion and offline ZIP export. |
 | `tests/overlays.test.ts` | Overlay removal without deleting article content. |
+| `tests/pdf.test.ts` | Direct-PDF capture, bounded extraction, deduplication and range delivery. |
 | `tests/phase1.test.ts` | Extraction, sanitisation, storage, readiness and image recovery. |
 | `tests/queue.test.ts` | Job lifecycle, attempts, recovery and tags. |
 | `tests/sanitize.test.ts` | Hostile HTML input and active-content removal. |
@@ -45,9 +47,11 @@ Unit tests do not replace live capture checks. Before changing capture readiness
 2. the stored SHA-256 matches downloaded MHTML bytes;
 3. the Article route returns `200` at phone, tablet and desktop widths;
 4. captured images use embedded `data:` URLs;
-5. the view makes no external requests;
-6. the document contains no scripts, forms or frames;
-7. the page has no horizontal overflow;
-8. `verify --all` passes against the disposable database.
+5. the full-page and Article views make no external requests;
+6. the Markdown reader uses authenticated same-origin archived-image routes where bytes are available;
+7. missing Markdown images remain blocked unless remote fallback is enabled explicitly;
+8. the document contains no scripts, forms or frames;
+9. the page has no horizontal overflow;
+10. `verify --all` passes against the disposable database.
 
 Production data should be backed up and verified before deployment.

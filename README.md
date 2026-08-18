@@ -12,9 +12,10 @@ The service runs on Bun with SQLite FTS5, an in-process job queue and Playwright
 - canonical Chromium MHTML with SHA-256 verification;
 - byte-exact source PDFs with inline/range delivery and extracted text;
 - offline full-page and simplified Article views;
+- a Markdown reader that uses authenticated, same-origin archived images when available;
 - server-side full-text search, filters and pagination;
 - HTML, Markdown ZIP, EPUB 3 and on-demand PDF exports;
-- HTTP API, bookmarklet and Bun CLI;
+- HTTP API, bookmarklet, Bun CLI and an authenticated queue monitor at `/status`;
 - HTTP Basic authentication by default;
 - consistent online backup and streaming integrity verification;
 - read-only, resumable ArchiveBox migration and verified original-PDF enrichment.
@@ -45,7 +46,7 @@ The default database path is `./data/packrat.db`.
 
 ## Project status
 
-Fresh web/PDF capture, search, offline reading, export, deletion, backup, verification, ArchiveBox import and original-PDF enrichment are implemented and tested.
+Fresh web/PDF capture, search, offline reading, export, deletion, backup, verification, queue recovery, ArchiveBox import and original-PDF enrichment are implemented and tested in `v0.2.7`. ArchiveBox hostname cutover and retirement checks remain operational work.
 
 See the [documentation index](docs/README.md) for setup, configuration, architecture, API, CLI and operations. Requirements and delivery status are tracked in the [product requirements](docs/PRD.md) and [implementation plan](docs/PLAN.md).
 

@@ -74,15 +74,18 @@ Use `--dry-run` first. The importer defaults to 20 MB per HTML candidate to keep
 After reconciliation:
 
 1. run `verify --all` against the imported database;
-2. create a consistent backup with `backup`;
-3. restore that backup under a separate filename;
-4. run `verify --all` against the restored copy;
-5. test representative SingleFile, rendered-HTML and metadata-only records;
-6. keep ArchiveBox read-only until cutover and rollback periods are agreed.
+2. run `import archivebox-pdfs --data-root /archivebox` to enrich verified original PDF responses;
+3. create a consistent backup with `backup`;
+4. restore that backup under a separate filename;
+5. run `verify --all` against the restored copy;
+6. test representative SingleFile, rendered-HTML, metadata-only and source-PDF records;
+7. keep ArchiveBox read-only until hostname cutover and rollback validation are complete.
 
 ## Queue recovery
 
-The queue records jobs and attempts in SQLite. On startup, Packrat requeues abandoned `running` jobs that have attempts remaining. Exhausted jobs become `failed`.
+The queue records jobs and attempts in SQLite. On startup, Packrat first marks abandoned `pending` capture rows as failed with `Capture interrupted by process restart`. It then requeues abandoned `running` jobs that have attempts remaining. Exhausted jobs become `failed`; capture jobs have a three-attempt ceiling.
+
+DNS resolution, browser operations and PDF extraction have explicit time bounds. A capture watchdog exits the process with status 70 when a capture remains unresolved for the larger of five minutes or four times `PACKRAT_CAPTURE_TIMEOUT_MS`. The service manager restarts Packrat, and startup recovery applies the rules above. This prevents a lost Chromium protocol promise from occupying a worker indefinitely.
 
 Inspect a job through the API:
 
@@ -94,6 +97,14 @@ A queued job can be cancelled with `DELETE /api/jobs/:id`. Running work is allow
 
 ## Status and logs
 
+Open the authenticated human-facing monitor at:
+
+```text
+http://localhost:3047/status
+```
+
+It refreshes every ten seconds and lists queue totals, workers, active and recent capture jobs, target URLs, attempts, timings, result links and readable errors. `GET /api/status` remains the stable machine-readable endpoint:
+
 ```bash
 curl -u 'packrat:password' http://localhost:3047/api/status
 docker compose logs -f packrat
@@ -101,7 +112,7 @@ docker compose logs -f packrat
 
 Logs are structured JSON. Capture bodies, cookies and authorisation headers are not logged.
 
-The status endpoint reports:
+The API status response reports:
 
 - capture totals by status;
 - queued and running jobs;
@@ -124,6 +135,8 @@ Packrat does not bypass authentication, paywalls, CAPTCHAs or anti-bot controls.
 
 ## Capacity limits
 
-The default maximum canonical page size is 20 MB. Legacy asset inlining limits each asset to 5 MB. Change these values through `PACKRAT_MAX_PAGE_BYTES` and `PACKRAT_MAX_ASSET_BYTES` after checking available memory and database growth.
+The default maximum canonical page size is 20 MB. Legacy asset inlining limits each asset to 5 MB. Direct source PDFs are limited to 100 MB; PDF.js extraction is limited to 60 seconds, 1,000 pages and 10 MB of UTF-8 text. Change these values through the corresponding `PACKRAT_*` environment variables after checking available memory and database growth.
 
-PDF and EPUB files are generated on demand and are not retained after delivery.
+The rendered Markdown reader caches at most 32 MiB of decoded archived image assets in process memory. The cache is not persistent and does not change canonical bytes.
+
+Rendered PDF and EPUB exports are generated on demand and are not retained after delivery. Direct source PDFs are persistent, byte-exact archive content.

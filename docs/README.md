@@ -6,9 +6,9 @@ These documents describe the running service, its interfaces and the remaining m
 
 - [Deployment](deployment.md) — run Packrat with Docker or Bun.
 - [Configuration](configuration.md) — environment variables and defaults.
-- [HTTP API](api.md) — capture, search, content, job and tag routes.
-- [Command-line interface](cli.md) — capture, export, backup and verification commands.
-- [Operations](operations.md) — persistence, backup, restore, recovery and security controls.
+- [HTTP API](api.md) — capture, search, reading, source-PDF, status, job and tag routes.
+- [Command-line interface](cli.md) — capture, import, search, export, backup and verification commands.
+- [Operations](operations.md) — persistence, backup, restore, queue recovery and security controls.
 - [Testing](testing.md) — type checking, test commands and test coverage.
 
 ## Understand or change Packrat

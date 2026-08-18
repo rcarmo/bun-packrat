@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-18T11:30:00Z
+updated: 2026-08-18T20:00:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -23,11 +23,7 @@ The replacement needs one useful representation of each page, one database to ba
 3. Keep all persistent application data in one SQLite database, including canonical MHTML and derived metadata.
 4. Import and convert the existing ArchiveBox collection at scale, with resumable jobs and an auditable result for every source snapshot.
 5. Search titles, URLs, metadata and extracted article text with SQLite FTS5.
-6. Export any successful capture as:
-   - safe self-contained HTML derived from the canonical MHTML;
-   - Markdown plus an asset directory or ZIP;
-   - EPUB;
-   - PDF generated on demand.
+6. Export successful web captures as safe self-contained HTML, a Markdown ZIP with local assets, EPUB 3 or a rendered PDF generated on demand.
 7. Run the application, workers, command-line interface and migrations on Bun.
 8. Make backup and restore a consistent SQLite copy operation.
 
@@ -49,10 +45,10 @@ The initial deployment has one trusted user on the local network.
 
 1. The user submits a URL through the web UI, HTTP API, bookmarklet or command line.
 2. The service normalises the URL and checks for a recent matching capture.
-3. A worker opens the page in Chromium through Playwright.
-4. The capture pipeline requires the primary document to reach `DOMContentLoaded`, then applies the configurable stricter readiness condition as a bounded best-effort settling signal. It dismisses known overlays, scrolls lazy content into view and records the final URL.
-5. Chromium serialises the complete rendered DOM and loaded resources as MHTML. The service stores it in one database transaction and extracts article metadata and search text as derived data.
-6. The archive page becomes available at a stable local URL.
+3. A worker first uses the bounded direct-download path for a PDF-looking URL. For other URLs it opens the page in Chromium through Playwright.
+4. The browser pipeline requires the primary document to reach `DOMContentLoaded`, then applies the configurable stricter readiness condition as a bounded best-effort settling signal. It dismisses known overlays, scrolls lazy content into view and records the final URL. An extensionless `application/pdf` response switches to the direct-download path after signature validation.
+5. Chromium serialises a web page's rendered DOM and loaded resources as MHTML. A direct PDF is stored byte-for-byte. The service records the source in SQLite and extracts search text as derived data.
+6. The capture becomes available at a stable local URL.
 
 ### Read on iOS
 
@@ -71,23 +67,13 @@ A capture detail page offers distinct `Full page`, `Article` and `Markdown` read
 
 The Article mode is the primary simplified reading view. It derives semantic article HTML from canonical MHTML, retains captured images as embedded `data:` resources, uses responsive reader typography and makes no external requests.
 
-The Markdown mode converts the captured semantic article content to Markdown and renders it as server-generated HTML. It is a text-oriented view of the stored capture, not a substitute for the offline Article view or a new persistent representation. When remote images are disabled, omitted images use plain alt text without bracket-style placeholders.
+The Markdown mode converts the captured semantic article content to Markdown and renders it as server-generated HTML. It is a text-oriented derived view, not a new persistent representation. The renderer maps original image URLs back to image bytes in the canonical HTML or MHTML and serves them through authenticated, same-origin `GET|HEAD /captures/:id/images/:index` routes. The route validates the MIME type, adds `nosniff` and leaves canonical bytes unchanged.
 
-Images in Markdown mode reference their original absolute HTTP or HTTPS URLs instead of embedded `data:` URLs or extracted local assets. To support this view:
+The capture pipeline still records the original resolved URL for every derived-article image as SQLite metadata. The browser reader's `.raw` companion uses same-origin archived-image URLs where bytes exist and original HTTP or HTTPS URLs for missing images. The agent-facing `GET /api/captures/:id/content/markdown` response retains original URLs. Both preserve deterministic document order, alt text and optional titles. The Markdown ZIP instead extracts archived data URLs into local assets and uses relative paths.
 
-- the capture pipeline records the original resolved URL for every derived-article image alongside the canonical MHTML snapshot;
-- the original image URL mapping is stored in SQLite as capture metadata;
-- Markdown image syntax uses the original URL: `![alt text](https://original.example/image.jpg)`;
-- `srcset` candidates resolve to one preferred original image URL, favouring the largest suitable candidate when dimensions are available;
-- duplicate original image URLs may share one metadata entry, but document order remains reproducible;
-- image alt text and optional title text are preserved;
-- when no valid original HTTP or HTTPS URL exists, Markdown mode omits the image or shows its alt text and records the omission in the capture warnings;
-- Markdown mode never substitutes the embedded `data:` URL into generated Markdown;
-- the generated Markdown and rendered view contain no capture cookies, authorisation headers, signed request headers or local file paths.
+If the renderer cannot find matching archived bytes, the default Markdown view emits alt text and makes no remote request. The user can enable `?remote=1` for the current view after a privacy warning; only missing archived images then fall back to their original hosts. This can disclose the reader's IP address, browser headers and referrer policy. The generated content contains no capture cookies, authorisation headers, signed request headers or local file paths.
 
-Markdown mode is an explicit online view. Opening it may contact the original image hosts and disclose the reader's IP address, browser headers and referrer policy. The UI displays this warning before enabling remote images. Remote images are disabled until the user enables them for the current view. The ordinary archived HTML view remains fully offline and makes no external requests.
-
-The server can return either rendered Markdown HTML or raw Markdown from the same stored capture. Neither response is cached permanently.
+Rendered Markdown and decoded archived image assets are derived on demand. A bounded 32 MiB in-process least-recently-used cache avoids repeated MHTML decoding; no derived files are persistent.
 
 ### Delete a capture
 
@@ -103,7 +89,7 @@ The server can return either rendered Markdown HTML or raw Markdown from the sam
 1. The operator points the importer at an ArchiveBox data root and its `index.sqlite3`.
 2. A read-only discovery pass inventories source snapshots, extractor outputs and missing files.
 3. The importer records a migration row for every ArchiveBox snapshot before conversion starts.
-4. Workers convert snapshots in bounded batches.
+4. The importer converts snapshots sequentially and commits each outcome independently.
 5. Interrupted runs resume without importing successful items twice.
 6. A final report accounts for every source row as imported, duplicate, skipped or failed.
 
@@ -111,7 +97,7 @@ The server can return either rendered Markdown HTML or raw Markdown from the sam
 
 ### Canonical capture format
 
-Every successful fresh capture stores Chromium MHTML as UTF-8 text or a compressed SQLite BLOB. The MHTML is the source of record and contains the complete rendered DOM plus every resource loaded into the snapshot by Chromium. Packrat does not replace it with Readability output.
+Every successful fresh web capture stores Chromium MHTML as UTF-8 text or a compressed SQLite BLOB. The MHTML is the source of record and contains the complete rendered DOM plus every resource loaded into the snapshot by Chromium. Packrat does not replace it with Readability output. Direct PDFs use the separate byte-exact source-PDF storage contract.
 
 The canonical BLOB records:
 
@@ -139,14 +125,15 @@ Existing legacy HTML captures remain readable through content sniffing until the
 
 Mozilla Readability or an equivalent deterministic DOM extractor supplies title, author, publication metadata, article text for FTS5, Markdown reading mode and article-oriented exports. Extraction never replaces the canonical full-page MHTML.
 
-Fresh captures record `full_page` mode. Other modes describe legacy or imported records:
+Fresh web captures record `full_page` mode. Other modes describe legacy, imported or direct-PDF records:
 
 - `article`: legacy Readability-based canonical HTML;
 - `full_page`: canonical Chromium MHTML for fresh captures, or legacy sanitised rendered HTML;
 - `imported_singlefile`: accepted ArchiveBox SingleFile output after validation and normalisation;
-- `metadata_only`: no usable page body was available.
+- `metadata_only`: no usable page body was available;
+- `pdf`: byte-exact source PDF with bounded extracted text.
 
-The UI must display the mode and any capture warnings. A failed Readability derivation does not fail a valid MHTML capture; article views then derive from the safe full-page HTML.
+The index displays storage mode for exceptional records: source PDF, metadata-only, imported page or legacy article. Ordinary MHTML rows omit the mode label. Capture warnings appear on the index. A failed Readability derivation does not fail valid MHTML; article views then derive from the safe full-page HTML.
 
 ### SQLite-only persistence
 
@@ -169,7 +156,7 @@ Runtime browser profiles, downloads and export workspaces may use an operating-s
 
 Use WAL mode during normal operation. Backups must use SQLite's online backup API or `VACUUM INTO`; copying a live database file without a consistent snapshot is unsupported.
 
-### Suggested data model
+### Data model
 
 | Table | Purpose |
 |---|---|
@@ -179,7 +166,7 @@ Use WAL mode during normal operation. Backups must use SQLite's online backup AP
 | `metadata` | Extensible name/value metadata not promoted to capture columns |
 | `tags` | User tags |
 | `capture_tags` | Capture-to-tag relation |
-| `jobs` | Capture, import and export job state |
+| `jobs` | Queued capture job state; the schema also reserves import and export kinds |
 | `attempts` | Bounded diagnostic history for each job |
 | `archivebox_imports` | Source snapshot ID, timestamp, paths, source hashes and migration outcome |
 | `captures_fts` | FTS5 index over title, URL, site, author and extracted text |
@@ -189,19 +176,19 @@ Use WAL mode during normal operation. Backups must use SQLite's online backup AP
 | `archivebox_pdf_enrichment` | Independent resumable outcome for each ArchiveBox row |
 | `schema_migrations` | Applied database migrations |
 
-Large canonical bodies should be compressed before storage if tests show a material size reduction without unacceptable read latency. The compression algorithm and uncompressed SHA-256 belong in each capture row. The first implementation should compare SQLite-native raw BLOB storage with gzip and zstd before selecting a default.
+Capture rows record the compression algorithm and SHA-256 of the uncompressed canonical bytes. `PACKRAT_HTML_COMPRESSION` supports `none` and `gzip`; `none` is the default. Source PDFs retain their exact bytes in content-addressed BLOB rows.
 
 ### Search and browsing
 
-The archive UI must provide:
+The archive UI provides:
 
 - full-text search;
-- URL, domain, title, tag, date, status and capture-mode filters;
+- URL, domain, title, tag, date and status filters; the API also exposes capture-mode filtering;
 - newest, oldest and relevance sorting;
 - capture detail and provenance;
 - full-page, simplified offline Article and text-oriented Markdown reading modes;
 - an explicit control and privacy warning before Markdown mode loads original remote images;
-- duplicate and failed-import views;
+- metadata-only provenance details, capture warnings and failed-capture filtering;
 - export actions;
 - recapture action;
 - deletion with explicit confirmation;
@@ -232,37 +219,52 @@ Minimum HTTP API:
 
 ```text
 POST   /api/captures              queue one URL
-POST   /api/import/archivebox     start or resume an import
 GET    /api/jobs/:id              inspect progress and errors
+DELETE /api/jobs/:id              cancel a queued job
 GET    /api/captures              search, filter, sort and page captures
 GET    /api/captures/:id          retrieve metadata and available content formats
+GET    /captures/:id?meta=1       retrieve the same metadata from the stable capture route
 GET    /api/captures/:id/content/:format
                                   extract mhtml|html|article-html|markdown|markdown-zip|epub|pdf
 DELETE /api/captures/:id          delete one capture after explicit confirmation
 GET    /captures/:id              view archived HTML
 GET    /captures/:id/article      view simplified offline article with captured images
 GET    /captures/:id/markdown     view server-rendered Markdown
-GET    /captures/:id/markdown.raw retrieve raw Markdown with original image URLs
+GET    /captures/:id/markdown.raw retrieve the browser reader's raw Markdown source
+GET|HEAD /captures/:id/images/:index
+                                  retrieve one authenticated archived Markdown image
+GET|HEAD /captures/:id/source.pdf retrieve the byte-exact source PDF
+GET|HEAD /captures/:id/source.txt retrieve extracted source-PDF text
 GET    /captures/:id/export/html  download HTML
 GET    /captures/:id/export/md    download Markdown and assets as ZIP
 GET    /captures/:id/export/epub  generate and download EPUB
-GET    /captures/:id/export/pdf   generate and download PDF
+GET    /captures/:id/export/pdf   generate and download rendered PDF
+GET    /status                     view the human-readable queue monitor
+GET    /api/status                 retrieve machine-readable service status
 ```
 
-Minimum Bun CLI:
+ArchiveBox import and PDF enrichment are CLI-only operations. They have no HTTP mutation route.
+
+Bun CLI commands run as `bun run src/cli/index.ts <command>`:
 
 ```text
-archive capture <url>
-archive import archivebox --data-root <path> --database <path>
-archive import status [job-id]
-archive search <query>
-archive export <capture-id> --format html|md|epub|pdf
-archive delete <capture-id> --confirm
-archive verify [--all]
-archive backup <destination.sqlite>
+capture <url> [--force]
+import archivebox --data-root <path> [--database <path>]
+import archivebox-pdfs --data-root <path>
+import status
+search <query>
+list [--limit N]
+export <capture-id> --format html|md|epub|pdf [--output <path>]
+delete <capture-id> --confirm
+verify [--all] [--id N]
+backup <destination.sqlite>
+migrate
+status
 ```
 
 `GET /api/captures` accepts `q`, `url`, `domain`, `title`, `tag`, `dateFrom`, `dateTo`, `status`, `mode`, `sort`, `limit` and `offset`. The response contains capture metadata, `availableFormats`, stable metadata/content URLs, and the paging metadata defined above. This endpoint is the agent-facing search API; it does not require clients to parse the HTML index.
+
+`GET /status` is the authenticated human-readable queue monitor and refreshes every ten seconds. `GET /api/status` retains the compact machine-readable contract for health checks and automation.
 
 `GET /api/captures/:id/content/:format` is the agent-facing extraction API:
 
@@ -278,7 +280,7 @@ archive backup <destination.sqlite>
 | `source-pdf` | `application/pdf` | Byte-exact stored source PDF with `HEAD` and single-byte range delivery. |
 | `source-pdf-text` | `text/plain` | Bounded PDF.js extraction; empty for verified image-only PDFs. |
 
-Successful extraction responses include `X-Packrat-Capture-Id`, `X-Packrat-Content-Format`, `X-Packrat-Content-Hash`, `X-Packrat-Source-Url` and `X-Packrat-Final-Url`. Responses use `Cache-Control: no-store`. Binary and HTML responses use `Content-Disposition: attachment`; plain Markdown may be consumed inline. Unknown formats return `404`; missing or unsuccessful captures return `404`; a requested canonical format unavailable for a legacy capture returns `409`.
+Successful extraction responses include `X-Packrat-Capture-Id`, `X-Packrat-Content-Format`, `X-Packrat-Content-Hash`, `X-Packrat-Source-Url` and `X-Packrat-Final-Url`. Responses use `Cache-Control: no-store`. Unknown formats return `404`; missing or unsuccessful captures return `404`; a requested canonical format unavailable for a legacy capture returns `409`.
 
 The API uses the same authentication requirement as the web UI. Agents authenticate with HTTP Basic authentication unless the operator explicitly sets `PACKRAT_AUTH_DISABLED=1`. Search and extraction are read-only and do not require same-origin mutation headers.
 
@@ -299,7 +301,7 @@ Import, capture and delete commands must support JSON output for automation.
 
 ## ArchiveBox migration
 
-Mass import is a release-blocking requirement, not a later migration utility.
+Mass import was a release requirement and is now implemented as a CLI-only migration utility.
 
 ### Source discovery
 
@@ -355,34 +357,21 @@ The importer preserves ArchiveBox source identity while avoiding duplicate store
 
 ### Resumption and throughput
 
-The importer must:
+The importer:
 
-- commit bounded batches;
-- record a durable checkpoint after every item or small batch;
-- use a configurable worker count;
-- constrain memory and temporary-disk use;
-- retry transient parsing failures with a fixed limit;
-- resume after process or host failure;
-- support `--dry-run` and `--verify-only`;
-- avoid network access unless the operator explicitly enables live repair.
+- commits each converted source item in one transaction;
+- records a durable outcome for every source snapshot;
+- processes candidates sequentially with a 20 MB per-candidate default limit;
+- resumes terminal outcomes after process or host failure;
+- retries failed rows only when the operator passes `--retry-failed`;
+- supports `--dry-run`, `--verify-only` and a bounded `--limit` rehearsal;
+- performs no network access or source writes.
 
 The existing archive is about 35 GB with more than 130,000 files. Acceptance testing must use the complete collection, not only fixtures.
 
 ### Migration report
 
-The final JSON and HTML reports must contain:
-
-- total source snapshots;
-- imported article, full-page and SingleFile captures;
-- metadata-only records;
-- exact duplicates;
-- skipped rows with reasons;
-- failed rows with bounded error details;
-- source bytes inspected;
-- SQLite database size;
-- count and size reduction;
-- sample validation results by source type;
-- a reconciliation list proving every source snapshot has one terminal outcome.
+The JSON report contains source inventory and schema fingerprint, candidate counts and bytes, outcome counts, processed and resumed counts, up to 100 bounded failure details, target database size, elapsed time and terminal/pending reconciliation totals. The HTML report presents reconciliation totals, outcome counts and failures. `--verify-only` checks source identity, terminal outcomes and capture references against the current ArchiveBox index.
 
 ArchiveBox remains read-only and available until reconciliation passes and a backup of the new database is restored successfully on a clean instance.
 
@@ -415,9 +404,7 @@ The EPUB exporter uses the same parsed HTML and extracted assets. It must:
 - remove archive controls and unsupported CSS;
 - pass `epubcheck` in release tests.
 
-The implementation may call an installed converter, but the service remains a Bun application and records the converter and version used. A pure Bun exporter is preferred if it meets validation requirements without excessive scope.
-
-Starting point: `rcarmo/bun-readlater-epub` (https://github.com/rcarmo/bun-readlater-epub) — reuse its proven Bun EPUB packaging and compatibility work.
+The exporter is a pure Bun ZIP implementation adapted from `rcarmo/bun-readlater-epub`. It requires no external converter. Release tests call `epubcheck` when the command is installed.
 
 ### PDF
 
@@ -436,23 +423,26 @@ PDF.js runs in an isolated worker with defaults of 100 MiB per PDF, 60 seconds, 
 - Tests: Bun test runner.
 - Deployment: one service process plus bounded worker execution; no external queue or search service.
 
-The service must expose health, queue depth, capture duration, import counts and database size through a compact status endpoint. Logs are structured JSON and must not include page bodies, cookies or authentication headers.
+`GET /api/status` exposes capture totals, queue depth, active workers, capture duration, import counts and database size. `GET /status` renders the human-readable queue monitor. Logs are structured JSON and exclude page bodies, cookies and authentication headers.
 
 ## Security and privacy
 
 - Default deployment is LAN-only and authenticated.
 - URL submission rejects unsupported schemes and local-file URLs.
-- Server-side request forgery controls block loopback, link-local and private targets unless an explicit allow-list permits them.
+- Server-side request forgery controls block loopback, link-local, private and reserved targets.
 - Browser contexts are isolated per capture and discarded afterwards.
 - Imported and captured scripts never execute when an archived page is viewed.
 - Response headers apply a restrictive Content Security Policy that allows embedded images and styles but denies scripts, frames, forms, workers and network connections.
-- Capture credentials are optional, scoped and stored outside the archive database through the host's secret mechanism.
+- Packrat does not inject credentials into browser capture sessions or bypass protected-site controls.
 - Exported documents never contain capture-session cookies or authorisation headers.
 
 ## Reliability and operations
 
 - Jobs have explicit `queued`, `running`, `succeeded`, `failed` and `cancelled` states.
-- A startup recovery pass returns abandoned running jobs to a resumable state.
+- Startup recovery marks abandoned pending capture rows as failed, requeues running jobs with attempts remaining and fails exhausted jobs.
+- Capture jobs have a three-attempt ceiling.
+- DNS, browser operations and PDF extraction use bounded waits.
+- A process watchdog exits with status 70 when a capture exceeds the larger of five minutes or four times the configured capture timeout; service restart invokes normal recovery.
 - Duplicate submissions use idempotency keys or normalised URL checks.
 - Capture deletion requires explicit confirmation and uses one transaction.
 - Database writes use transactions and foreign-key enforcement.
@@ -463,7 +453,7 @@ The service must expose health, queue depth, capture duration, import counts and
 
 ## Performance targets
 
-Targets apply to the current ArchiveBox-scale collection on the intended home server:
+These original design targets are not automated release gates:
 
 - Search response: p95 under 500 ms for ordinary FTS queries.
 - Archive detail response: first byte under 500 ms for a typical stored page on the LAN.
@@ -500,14 +490,17 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [x] Duplicate bodies do not create unreported duplicate storage.
 - [x] The final reconciliation report matches the source snapshot count.
 - [x] A statistically useful sample from each available source format opens successfully on desktop Chromium; physical iOS Safari remains an operational cutover check.
-- [ ] ArchiveBox is not retired until the imported database has been backed up and restored on a clean instance.
+- [x] The imported database has been backed up, restored and verified on a clean instance.
+- [ ] ArchiveBox remains read-only until hostname cutover and rollback validation are complete.
 
 ### Markdown reading mode
 
 - [x] Every newly captured derived-article image records its original resolved HTTP or HTTPS URL alongside the canonical snapshot.
 - [x] Capture details can switch between archived HTML and server-rendered Markdown.
-- [x] Raw Markdown references original image URLs and contains no embedded data URLs or local asset paths.
-- [x] Remote images remain disabled until the user accepts the network and privacy warning for that view.
+- [x] The browser `.raw` view uses same-origin archived-image routes where available and contains no embedded data URLs or local file paths.
+- [x] API Markdown retains original image URLs for agent consumption.
+- [x] Rendered Markdown uses authenticated same-origin archived images when matching bytes exist.
+- [x] Only images missing from the archive can use the privacy-gated remote fallback.
 - [x] The offline Markdown ZIP continues to contain local relative asset references.
 - [x] Missing or invalid original image URLs produce deterministic alt-text output and a capture warning.
 
@@ -533,7 +526,8 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [x] HTML exports derived from canonical MHTML open offline.
 - [x] Markdown ZIPs contain local relative asset references only.
 - [x] EPUB 3 exports pass `epubcheck`; Apple Books device validation remains an operational release check.
-- [x] PDF generation works on demand and leaves no persistent PDF.
+- [x] Rendered PDF generation works on demand and leaves no persistent export.
+- [x] Direct source PDFs retain byte-exact content and support bounded extraction and range delivery.
 
 ## Delivery phases
 
@@ -549,12 +543,15 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 - Add queueing, search, tags, capture history and the web UI.
 - Add backup, restore and verification commands.
-- Add HTML and Markdown exports.
+- Add HTML, Markdown, EPUB and rendered-PDF exports.
+- Add direct source-PDF storage, extraction and delivery.
+- Add the human-readable `/status` queue monitor and startup recovery.
 
 ### Phase 3 — ArchiveBox importer ✅
 
 - Implement schema adapters and source inventory.
-- Convert SingleFile, rendered and original HTML sources.
+- Convert SingleFile and rendered HTML sources, with metadata-only fallback.
+- Enrich verified original PDF responses after HTML migration.
 - Add resumption, deduplication and reconciliation reports.
 - Run a full read-only migration rehearsal against the current archive.
 
@@ -562,23 +559,23 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 - Add EPUB 3 generation and `epubcheck` tests.
 - Add on-demand Playwright PDF generation.
-- Test Apple Books and iOS Safari end to end.
+- Validate EPUB structure and run `epubcheck` when installed; Apple Books device validation remains an operational check.
 
 ### Phase 5 — cutover 🔜
 
-- Freeze ArchiveBox writes (VM already stopped as of 2026-08-10).
-- Run the final incremental import and reconciliation.
-- Back up and restore the new SQLite database on a clean instance.
-- Redirect the local archive hostname.
-- Keep ArchiveBox storage read-only through an agreed rollback period.
+- [x] Freeze ArchiveBox writes (VM stopped as of 2026-08-10).
+- [x] Run the import, original-PDF enrichment and reconciliation.
+- [x] Back up and restore the SQLite database on a clean instance.
+- [ ] Redirect the local archive hostname.
+- [ ] Validate rollback, then retire ArchiveBox after the agreed read-only period.
 
 ## Open decisions
 
 1. Whether to store HTML as raw UTF-8, gzip or zstd BLOBs — wired via `PACKRAT_HTML_COMPRESSION`; zstd deferred pending Bun native support.
-2. Whether exact duplicate documents share one body row — deferred to Phase 3 import work.
+2. Whether exact duplicate documents share one body row — resolved for imports: exact canonical hashes reuse an existing capture and retain separate provenance outcomes; ordinary captures retain one body per row.
 3. The maximum allowed captured-page size and per-asset size — defaults set (20 MB / 5 MB), configurable.
 4. The freshness interval before a repeated URL submission creates a new capture — resolved: 24 hours by default, configurable via `PACKRAT_FRESHNESS_SECONDS`, with forced recapture.
-5. Whether authenticated captures are required in the first release — resolved for service access: HTTP Basic authentication is required by default. Optional scoped credentials for capturing protected sites remain deferred.
+5. Whether authenticated captures are required in the first release — resolved for service access: HTTP Basic authentication is required by default. Packrat does not inject credentials into protected-site capture sessions.
 6. Whether local archived-link rewriting should be enabled by default — deferred.
 7. Whether EPUB generation uses a Bun-native writer or an external converter — resolved: pure Bun ZIP, no external tools.
 8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 5.

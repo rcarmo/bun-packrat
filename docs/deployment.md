@@ -36,6 +36,7 @@ Create `config/.env` to override container settings:
 PACKRAT_BASE_URL=http://packrat.local
 PACKRAT_HTML_COMPRESSION=gzip
 PACKRAT_MAX_CONCURRENT_CAPTURES=3
+PACKRAT_MAX_PDF_BYTES=104857600
 PACKRAT_AUTH_USER=packrat
 PACKRAT_AUTH_PASSWORD=replace-with-a-secret
 ```
@@ -58,9 +59,9 @@ The entry point reads `/config/.env`. To run with host-matching file ownership, 
 
 ## Published images
 
-Pushing a semantic version tag such as `v0.2.0` publishes a multi-platform image to `ghcr.io/rcarmo/bun-packrat`. The workflow produces full, major/minor, major and `latest` tags for `linux/amd64` and `linux/arm64`, uses the GitHub Actions build cache, and attaches build provenance.
+Pushing a semantic version tag such as `v0.2.7` runs type checking and the full test suite before publishing a multi-platform image to `ghcr.io/rcarmo/bun-packrat`. Chromium installation in the test job has a five-minute bound and one retry. The workflow produces full, major/minor, major and `latest` tags for `linux/amd64` and `linux/arm64`, uses the GitHub Actions build cache, and attaches build provenance.
 
-The release workflow retains the five newest tagged package versions. It also removes stale untagged versions older than the retained set and keeps the five newest workflow runs. Publication runs only for `v*` tag pushes; ordinary branches and manual dispatches cannot publish or prune images.
+The release workflow keeps the five newest semantic-version package releases and their multi-platform manifest safety window. It removes older package versions outside that window and keeps the five newest workflow runs. Publication runs only for `v*` tag pushes; ordinary branches and manual dispatches cannot publish or prune images.
 
 ```bash
 docker pull ghcr.io/rcarmo/bun-packrat:latest
@@ -101,4 +102,4 @@ PACKRAT_AUTH_DISABLED=1 bun run src/server.ts
 curl http://localhost:3047/api/status
 ```
 
-Use unauthenticated mode only on a trusted network.
+Use unauthenticated mode only on a trusted network. `/api/status` is the health and automation endpoint; `/status` is the authenticated human-readable queue monitor.

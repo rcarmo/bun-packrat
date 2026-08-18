@@ -15,7 +15,7 @@ flowchart LR
     Q --> X[Bounded PDF download and PDF.js worker]
     X --> D
     D --> R[MHTML decoder and safe renderer]
-    R --> V[Full-page and Article views]
+    R --> V[Full-page, Article and Markdown views]
     R --> E[HTML, Markdown ZIP, EPUB and PDF exports]
 ```
 
@@ -47,7 +47,7 @@ sequenceDiagram
 
 `DOMContentLoaded` is required. `load` or `networkidle`, when configured, is a settling signal bounded to 10 seconds. A page that keeps analytics or media connections open can still produce a valid capture.
 
-The browser request handler resolves each HTTP or HTTPS origin and rejects loopback, link-local, private and reserved addresses. The final URL is checked again after navigation.
+The browser request handler resolves each HTTP or HTTPS origin with a ten-second DNS bound and rejects loopback, link-local, private and reserved addresses. The final URL is checked again after navigation. Capture and PDF operations use bounded waits. A queue watchdog exits the process if a capture remains unresolved for the larger of five minutes or four times the capture timeout; normal startup recovery then closes abandoned pending captures and requeues eligible jobs.
 
 ## Stored and derived content
 
@@ -58,7 +58,7 @@ flowchart TD
     H --> F[Full-page browser view]
     H --> P[On-demand PDF]
     A --> AV[Offline Article view]
-    A --> MD[Markdown view]
+    A --> MD[Markdown view and same-origin archived image routes]
     A --> Z[Markdown ZIP]
     A --> EP[EPUB 3]
 ```
@@ -75,7 +75,7 @@ Legacy captures can contain stored HTML. Content sniffing keeps those records re
 |---|---|
 | `full_page` | Fresh canonical MHTML or legacy sanitised full-page HTML. |
 | `article` | Legacy Readability-based canonical HTML. |
-| `imported_singlefile` | Validated ArchiveBox SingleFile output. Planned for the importer. |
+| `imported_singlefile` | Validated and normalised ArchiveBox SingleFile output. |
 | `metadata_only` | URL and metadata without a usable page body. |
 | `pdf` | Byte-exact source PDF with bounded extracted text. |
 
@@ -101,6 +101,8 @@ SQLite uses WAL mode and foreign-key enforcement.
 | `captures_fts` | FTS5 index over title, site, author, URL, domain and body text. |
 | `schema_migrations` | Applied schema versions. |
 
+Migrations `001_initial.sql` through `006_source_pdfs.sql` define the deployed `v0.2.7` schema. Migration `005` adds body-format metadata and FTS trigger updates. Migration `006` adds source-PDF storage, associations, extraction state and ArchiveBox PDF-enrichment outcomes.
+
 ## Offline rendering policy
 
 Archived HTML and Article responses use this Content Security Policy:
@@ -109,7 +111,9 @@ Archived HTML and Article responses use this Content Security Policy:
 Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 ```
 
-Full-page and Article views make no external requests. Markdown mode can expose original image hosts only after the user enables remote images for that view.
+Full-page and Article views make no external requests. The rendered Markdown reader resolves images to authenticated, same-origin `/captures/:id/images/:index` resources when matching archived bytes are available. Missing archived images remain alt text unless the user enables the privacy-gated remote fallback. Its `.raw` companion exposes the same mixed archived/fallback Markdown source. The agent-facing API Markdown retains original URLs, while Markdown ZIP exports use offline relative assets.
+
+The Markdown archived-image decoder uses a bounded 32 MiB in-process least-recently-used cache. It does not create persistent derived files or alter canonical HTML, MHTML or PDF bytes.
 
 ## Source layout
 

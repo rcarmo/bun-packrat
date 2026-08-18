@@ -13,6 +13,10 @@ Packrat reads configuration from environment variables when the process starts. 
 | `PACKRAT_MAX_CONCURRENT_CAPTURES` | `2` | Parallel capture workers, from 1 to 16. |
 | `PACKRAT_MAX_PAGE_BYTES` | `20971520` | Maximum canonical page size: 20 MB. |
 | `PACKRAT_MAX_ASSET_BYTES` | `5242880` | Maximum asset size for the legacy HTML inliner: 5 MB. |
+| `PACKRAT_MAX_PDF_BYTES` | `104857600` | Maximum direct source-PDF download: 100 MB. |
+| `PACKRAT_PDF_EXTRACTION_TIMEOUT_MS` | `60000` | PDF.js extraction worker timeout in milliseconds. |
+| `PACKRAT_MAX_PDF_PAGES` | `1000` | Maximum pages processed during PDF text extraction. |
+| `PACKRAT_MAX_PDF_TEXT_BYTES` | `10485760` | Maximum extracted PDF text retained: 10 MB of UTF-8. |
 | `PACKRAT_HTML_COMPRESSION` | `none` | Stored body compression: `none` or `gzip`. |
 | `PACKRAT_FRESHNESS_SECONDS` | `86400` | Reuse interval for a successful capture. `0` disables reuse. |
 | `PACKRAT_CAPTURE_WAIT_UNTIL` | `networkidle` | Best-effort readiness state: `load`, `domcontentloaded`, `networkidle` or `commit`. |
@@ -27,13 +31,17 @@ Packrat reads configuration from environment variables when the process starts. 
 
 The primary document must reach `DOMContentLoaded`. A configured `load` or `networkidle` wait is then bounded to 10 seconds. Timeout produces a capture warning and processing continues from the parsed document.
 
-`PACKRAT_CAPTURE_TIMEOUT_MS` still applies to the required navigation and browser operations.
+`PACKRAT_CAPTURE_TIMEOUT_MS` applies to required navigation and browser operations. DNS resolution is bounded to ten seconds. Each queued capture also has a process watchdog set to the larger of five minutes or four times the configured capture timeout.
 
 ## Authentication
 
 Startup requires `PACKRAT_AUTH_PASSWORD` unless `PACKRAT_AUTH_DISABLED=1`. All UI and API routes use the same authentication policy.
 
 Browser-originated mutations must be same-origin. Requests from command-line clients without `Origin` and `Sec-Fetch-Site` headers are accepted.
+
+## Source PDFs
+
+When the primary response is a PDF, Packrat stores its byte-exact content after applying `PACKRAT_MAX_PDF_BYTES`. PDF.js extraction runs in an isolated worker and applies the extraction timeout, page and text limits independently. A valid PDF remains stored if extraction times out, is encrypted, is image-only or otherwise fails.
 
 ## Compression
 

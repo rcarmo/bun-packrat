@@ -61,9 +61,10 @@ The response includes `captures`, `total`, `limit`, `offset`, `previousOffset` a
 
 ```text
 GET /api/captures/:id
+GET /captures/:id?meta=1
 ```
 
-The response includes metadata, warnings, tags, aliases, available formats, stable content links and deletion impact.
+The response includes metadata, warnings, tags, aliases, available formats, stable content links and deletion impact. PDF captures also report their source-PDF hash, byte size and extraction status. `GET /captures/:id` without `meta=1` returns HTML when the client accepts `text/html`; other clients receive the same metadata JSON.
 
 ### Update a note
 
@@ -99,12 +100,12 @@ The `confirm` value must be the capture ID as a string or the JSON value `true`.
 |---|---|
 | `GET /captures/:id` | Safe offline full-page HTML, or the source-PDF viewer for PDF captures. |
 | `GET /captures/:id/article` | Simplified offline Article view with captured images. |
-| `GET /captures/:id/markdown` | Server-rendered Markdown with remote images disabled by default. |
-| `GET /captures/:id/markdown?remote=1` | Markdown view with original remote images enabled. |
-| `GET /captures/:id/markdown.raw` | Raw Markdown with original image URLs. |
+| `GET /captures/:id/markdown` | Server-rendered Markdown using archived same-origin images when available; missing remote images are disabled. |
+| `GET /captures/:id/markdown?remote=1` | Markdown view with archived images plus original remote fallback for images absent from the archive. |
+| `GET /captures/:id/markdown.raw` | Raw Markdown using same-origin archived image URLs where available and original URLs for missing images. |
 | `GET /captures/:id?raw=1` | Byte-exact canonical MHTML attachment for fresh captures or byte-exact stored HTML for legacy captures. |
 | `GET|HEAD /captures/:id/source.pdf` | Inline byte-exact source PDF with single-byte `Range` support. Add `?download=1` for attachment disposition. |
-| `GET|HEAD /captures/:id/source.txt` | Extracted source-PDF text. Encrypted or failed extraction returns `409`. |
+| `GET|HEAD /captures/:id/source.txt` | Extracted source-PDF text. Encrypted, timed-out or failed extraction returns `409`; verified image-only PDFs return empty text. |
 
 Capture rows show the source domain, capture date, canonical body size and author or site when available. Storage mode appears only for exceptional records such as metadata-only, imported or legacy article captures. Asset counts are not computed while rendering the list.
 
@@ -125,7 +126,7 @@ GET /api/captures/:id/content/:format
 | `mhtml` | `multipart/related` | Canonical Chromium MHTML. Legacy HTML records return `409 Conflict`. |
 | `html` | `text/html` | Safe standalone full-page HTML. |
 | `article-html` | `text/html` | Simplified offline article HTML. |
-| `markdown` | `text/markdown` | Article Markdown with original HTTP or HTTPS image URLs. |
+| `markdown` | `text/markdown` | Article Markdown with original HTTP or HTTPS image URLs. This agent-facing response does not use the browser reader's archived-image routes. |
 | `markdown-zip` | `application/zip` | Offline Markdown, metadata and local assets. |
 | `epub` | `application/epub+zip` | On-demand EPUB 3. |
 | `pdf` | `application/pdf` | On-demand PDF of safe full-page HTML. |
@@ -193,7 +194,7 @@ GET  /captures/:id/images/:index
 HEAD /captures/:id/images/:index
 ```
 
-The route returns only validated image MIME types with `nosniff`; it does not change the canonical capture bytes. Images absent from the archive remain blocked unless the reader explicitly enables remote images for that view.
+The route returns only validated image MIME types with `X-Content-Type-Options: nosniff`; it does not change the canonical capture bytes. Invalid indexes or non-image resources return `404`. Images absent from the archive remain blocked unless the reader explicitly enables remote images for that view. Decoded image assets share a bounded 32 MiB in-process cache.
 
 ## ArchiveBox source-PDF enrichment
 
