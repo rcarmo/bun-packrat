@@ -158,16 +158,19 @@ Each route streams an attachment. Packrat does not retain generated export files
 ## Tags
 
 ```text
-GET  /api/tags
-GET  /api/captures/:id/tags
-POST /api/captures/:id/tags
+GET    /api/tags
+GET    /api/captures/:id/tags
+POST   /api/captures/:id/tags
+DELETE /api/captures/:id/tags
 ```
 
-Add a tag with:
+Add or remove one capture-tag association by sending the same JSON body with `POST` or `DELETE`:
 
 ```json
 {"tag":"reference"}
 ```
+
+Removing a tag's final capture association also removes the unused tag from the global tag index. The web index exposes this through **Manage tags…** in each capture's **More** menu.
 
 ## Service status and bookmarklet
 

@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, updateLatestCapture, createJob, getCaptureById, getCaptureDeleteImpact, deleteCapture, setCaptureImageSources, countCaptures, listCaptures } from '../src/db/index.js';
+import { openDatabase, runMigrations, getOrCreateUrl, insertCapture, updateLatestCapture, createJob, getCaptureById, getCaptureDeleteImpact, deleteCapture, setCaptureImageSources, countCaptures, listCaptures, addTagToCapture, listTags } from '../src/db/index.js';
 import { renderRemoteMarkdown } from '../src/export/markdown.js';
 import { renderMarkdownHtml } from '../src/export/render-markdown.js';
 import { resolveCaptureIndexPage } from '../src/index-page.js';
@@ -27,6 +27,9 @@ describe('index client', () => {
   test('keeps secondary list actions behind one disclosure', () => {
     expect(INDEX_CLIENT_SCRIPT).toContain("document.querySelectorAll('.item-more')");
     expect(INDEX_CLIENT_SCRIPT).toContain("event.key === 'Escape'");
+    expect(INDEX_CLIENT_SCRIPT).toContain("document.querySelectorAll('.manage-tags')");
+    expect(INDEX_CLIENT_SCRIPT).toContain("mutateCaptureTag(editor, 'POST', tag)");
+    expect(INDEX_CLIENT_SCRIPT).toContain("mutateCaptureTag(remove.closest('.tag-editor'), 'DELETE'");
   });
 });
 
@@ -36,6 +39,7 @@ describe('capture deletion', () => {
     const second = add('https://example.com/a', 'Second', '2026-01-02T00:00:00Z');
     db.exec("INSERT INTO capture_aliases(capture_id,url) VALUES (?, 'https://example.com/old')", [second.id]);
     db.exec("INSERT INTO metadata(capture_id,key,value) VALUES (?, 'x', 'y')", [second.id]);
+    addTagToCapture(db, second.id, 'temporary');
     const job = createJob(db, 'capture', { url: second.url.original });
     db.exec("UPDATE jobs SET capture_id=?, status='succeeded', result='{}' WHERE id=?", [second.id, job]);
     expect(getCaptureDeleteImpact(db, second.id)?.jobs).toBe(1);
@@ -44,6 +48,7 @@ describe('capture deletion', () => {
     expect(getCaptureById(db, second.id)).toBeNull();
     expect(db.query<{ capture_id:number|null; result:string },[number]>('SELECT capture_id,result FROM jobs WHERE id=?').get(job)?.capture_id).toBeNull();
     expect(db.query<{ latest_capture:number },[number]>('SELECT latest_capture FROM urls WHERE id=?').get(first.url.id)?.latest_capture).toBe(first.id);
+    expect(listTags(db)).toEqual([]);
   });
 
   test('retains URL identity while a job references an equivalent normalised URL', () => {

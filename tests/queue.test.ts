@@ -127,7 +127,7 @@ describe('job lifecycle', () => {
 
 describe('tag management', () => {
   test('addTagToCapture and getCaptureTags round-trip', async () => {
-    const { getOrCreateUrl, insertCapture, addTagToCapture, getCaptureTags } = await import('../src/db/index.js');
+    const { getOrCreateUrl, insertCapture, addTagToCapture, getCaptureTags, removeTagFromCapture } = await import('../src/db/index.js');
 
     const url = getOrCreateUrl(db, 'https://example.com/', 'https://example.com/');
     const id = insertCapture(db, {
@@ -143,8 +143,15 @@ describe('tag management', () => {
     addTagToCapture(db, id, 'science'); // duplicate — should not double-insert
 
     const tags = getCaptureTags(db, id);
-    expect(tags).toContain('science');
-    expect(tags).toContain('energy');
-    expect(tags).toHaveLength(2);
+    expect(tags).toEqual(['energy', 'science']);
+
+    expect(removeTagFromCapture(db, id, '  science  ')).toBe(true);
+    expect(removeTagFromCapture(db, id, 'science')).toBe(false);
+    expect(getCaptureTags(db, id)).toEqual(['energy']);
+    expect(db.query<{ n:number },[string]>('SELECT count(*) n FROM tags WHERE name=?').get('science')?.n).toBe(0);
+
+    expect(removeTagFromCapture(db, id, 'energy')).toBe(true);
+    expect(getCaptureTags(db, id)).toEqual([]);
+    expect(db.query<{ n:number },[]>('SELECT count(*) n FROM tags').get()?.n).toBe(0);
   });
 });

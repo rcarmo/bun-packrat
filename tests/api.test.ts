@@ -139,6 +139,36 @@ describe('agent capture API', () => {
     }
   });
 
+  test('manages per-capture tags and renders individually removable filters', async () => {
+    const added = await fetch(`${base}/api/captures/${canonicalId}/tags`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ tag:'  reference  ' }),
+    });
+    expect(added.status).toBe(200);
+    expect((await added.json() as any).tags).toEqual(['reference']);
+
+    const page = await fetch(`${base}/?q=canonical&tag=reference&domain=example.com&status=all&sort=oldest&offset=50`).then((response) => response.text());
+    expect(page).toContain('class="active-filters"');
+    expect(page).toContain('Search: canonical');
+    expect(page).toContain('Tag: reference');
+    expect(page).toContain('Domain: example.com');
+    expect(page).toContain('Status: all');
+    expect(page).toContain('Sort: oldest');
+    expect(page).toContain('class="clear-filters" href="/"');
+    expect(page).toContain('class="manage-tags"');
+    expect(page).toContain(`id="tag-editor-${canonicalId}"`);
+    expect(page).toContain('q=canonical&amp;domain=example.com&amp;status=all&amp;sort=oldest');
+    expect(page).not.toContain('q=canonical&amp;tag=reference&amp;domain=example.com&amp;status=all&amp;sort=oldest&amp;offset=50');
+
+    const removed = await fetch(`${base}/api/captures/${canonicalId}/tags`, {
+      method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ tag:'reference' }),
+    });
+    expect(removed.status).toBe(200);
+    expect((await removed.json() as any).tags).toEqual([]);
+    expect((await fetch(`${base}/api/captures/${canonicalId}/tags`).then((response) => response.json()) as any).tags).toEqual([]);
+    expect((await fetch(`${base}/api/tags`).then((response) => response.json()) as any).tags).toEqual([]);
+    expect((await fetch(`${base}/api/captures/999999/tags`)).status).toBe(404);
+  });
+
   test('serves source PDFs inline or as attachments with HEAD and bounded single ranges', async () => {
     const metadata = await fetch(`${base}/api/captures/${sourcePdfId}`).then((response) => response.json()) as any;
     expect(metadata.availableFormats).toEqual(['source-pdf', 'source-pdf-text']);

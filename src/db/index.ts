@@ -414,6 +414,7 @@ export function deleteCapture(db: Database, id: number): DeleteCaptureResult | n
     db.exec('UPDATE archivebox_imports SET capture_id=NULL, outcome_detail=COALESCE(outcome_detail || \'; \', \'\') || ? WHERE capture_id=?', [`capture ${id} deleted`, id]);
     if (latestCaptureChanged) db.exec('UPDATE urls SET latest_capture=NULL WHERE id=?', [capture.url_id]);
     db.exec('DELETE FROM captures WHERE id=?', [id]);
+    db.exec('DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM capture_tags WHERE tag_id=tags.id)');
     const replacement = db.query<{ id: number }, [number]>(`
       SELECT id FROM captures WHERE url_id=? AND status='succeeded'
       ORDER BY captured_at DESC, id DESC LIMIT 1
@@ -715,11 +716,16 @@ export function getJobById(db: Database, id: number): JobRow | null {
 // Tag management
 // ---------------------------------------------------------------------------
 
-export function getOrCreateTag(db: Database, name: string): number {
+function normaliseTagName(name: string): string {
   const normalisedName = name.trim().replace(/\s+/g, ' ');
   if (!normalisedName || normalisedName.length > 100) {
     throw new Error('Tag names must contain 1 to 100 characters');
   }
+  return normalisedName;
+}
+
+export function getOrCreateTag(db: Database, name: string): number {
+  const normalisedName = normaliseTagName(name);
   const existing = db
     .query<{ id: number }, [string]>('SELECT id FROM tags WHERE name = ?')
     .get(normalisedName);
@@ -746,10 +752,25 @@ export function addTagToCapture(db: Database, captureId: number, tagName: string
   );
 }
 
+export function removeTagFromCapture(db: Database, captureId: number, tagName: string): boolean {
+  const normalisedName = normaliseTagName(tagName);
+  return db.transaction(() => {
+    const tag = db.query<{ id: number }, [string]>('SELECT id FROM tags WHERE name = ?').get(normalisedName);
+    if (!tag) return false;
+    const removed = db.query<{ tag_id: number }, [number, number]>(
+      'DELETE FROM capture_tags WHERE capture_id = ? AND tag_id = ? RETURNING tag_id',
+    ).get(captureId, tag.id);
+    if (!removed) return false;
+    db.query('DELETE FROM tags WHERE id = ? AND NOT EXISTS (SELECT 1 FROM capture_tags WHERE tag_id = ?)')
+      .run(tag.id, tag.id);
+    return true;
+  })();
+}
+
 export function getCaptureTags(db: Database, captureId: number): string[] {
   return db
     .query<{ name: string }, [number]>(
-      'SELECT t.name FROM tags t JOIN capture_tags ct ON ct.tag_id = t.id WHERE ct.capture_id = ?',
+      'SELECT t.name FROM tags t JOIN capture_tags ct ON ct.tag_id = t.id WHERE ct.capture_id = ? ORDER BY t.name COLLATE NOCASE',
     )
     .all(captureId)
     .map((r) => r.name);
@@ -760,7 +781,7 @@ export function listTags(db: Database): Array<{ name: string; count: number }> {
     .query<{ name: string; count: number }, []>(
       `SELECT t.name, COUNT(ct.capture_id) as count
        FROM tags t
-       LEFT JOIN capture_tags ct ON ct.tag_id = t.id
+       JOIN capture_tags ct ON ct.tag_id = t.id
        GROUP BY t.id
        ORDER BY count DESC, t.name ASC`,
     )

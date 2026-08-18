@@ -28,6 +28,109 @@ document.querySelectorAll('.delete').forEach((button) => button.addEventListener
   }
 }));
 
+function renderTagEditor(editor, tags) {
+  editor.replaceChildren();
+  const list = document.createElement('div');
+  list.className = 'tag-editor-list';
+  if (!tags.length) {
+    const empty = document.createElement('p');
+    empty.className = 'tag-editor-empty';
+    empty.textContent = 'No tags yet.';
+    editor.append(empty);
+  } else {
+    tags.forEach((tag) => {
+      const pill = document.createElement('span');
+      pill.className = 'tag-editor-pill';
+      const label = document.createElement('span');
+      label.textContent = tag;
+      const remove = document.createElement('button');
+      remove.className = 'tag-editor-remove';
+      remove.type = 'button';
+      remove.dataset.tag = tag;
+      remove.setAttribute('aria-label', 'Remove tag ' + tag);
+      remove.textContent = '×';
+      pill.append(label, remove);
+      list.append(pill);
+    });
+    editor.append(list);
+  }
+  const status = document.createElement('p');
+  status.className = 'tag-editor-status';
+  status.hidden = true;
+  status.setAttribute('role', 'status');
+  const form = document.createElement('form');
+  form.className = 'tag-editor-form';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.name = 'tag';
+  input.maxLength = 100;
+  input.placeholder = 'Add a tag';
+  input.setAttribute('aria-label', 'New tag');
+  const add = document.createElement('button');
+  add.type = 'submit';
+  add.textContent = 'Add';
+  form.append(input, add);
+  editor.append(status, form);
+}
+
+async function mutateCaptureTag(editor, method, tag) {
+  const status = editor.querySelector('.tag-editor-status');
+  status.hidden = false;
+  status.textContent = method === 'POST' ? 'Adding tag…' : 'Removing tag…';
+  editor.querySelectorAll('button,input').forEach((control) => { control.disabled = true; });
+  try {
+    const response = await fetch('/api/captures/' + editor.dataset.id + '/tags', {
+      method,
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tag}),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not update tags');
+    location.reload();
+  } catch (error) {
+    status.textContent = error?.message || 'Could not update tags';
+    editor.querySelectorAll('button,input').forEach((control) => { control.disabled = false; });
+  }
+}
+
+document.querySelectorAll('.manage-tags').forEach((button) => button.addEventListener('click', async () => {
+  const editor = document.getElementById(button.getAttribute('aria-controls'));
+  if (!editor.hidden) {
+    editor.hidden = true;
+    button.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/captures/' + button.dataset.id + '/tags');
+    if (!response.ok) throw new Error('Could not load tags');
+    const data = await response.json();
+    renderTagEditor(editor, data.tags || []);
+    editor.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    editor.querySelector('input')?.focus();
+  } catch (error) {
+    alert(error?.message || 'Could not load tags');
+  } finally {
+    button.disabled = false;
+  }
+}));
+
+document.addEventListener('submit', (event) => {
+  const form = event.target.closest('.tag-editor-form');
+  if (!form) return;
+  event.preventDefault();
+  const editor = form.closest('.tag-editor');
+  const tag = form.elements.tag.value.trim();
+  if (tag) mutateCaptureTag(editor, 'POST', tag);
+});
+
+document.addEventListener('click', (event) => {
+  const remove = event.target.closest('.tag-editor-remove');
+  if (!remove) return;
+  mutateCaptureTag(remove.closest('.tag-editor'), 'DELETE', remove.dataset.tag);
+});
+
 document.querySelectorAll('.recapture').forEach((button) => button.addEventListener('click', async () => {
   button.disabled = true;
   try {

@@ -8,7 +8,7 @@ import type { PackratConfig, CaptureMetadataRow } from './types.js';
 import {
   openDatabase, runMigrations,
   getCaptureHtml, getCaptureById, getSourcePdfMetadata, getSourcePdfRange, getSourcePdfText, listCaptures, searchCaptures,
-  getCaptureTags, addTagToCapture, listTags, getJobById, getJobAttempts,
+  getCaptureTags, addTagToCapture, removeTagFromCapture, listTags, getJobById, getJobAttempts,
   createJob, getCaptureAliases, updateCaptureNote, cancelJob,
   countCaptures, getCaptureDeleteImpact, deleteCapture,
 } from './db/index.js';
@@ -149,20 +149,22 @@ const server = Bun.serve({
     if (tagMatch) {
       const id = parseInt(tagMatch[1], 10);
       if (method === 'GET') {
+        if (!getCaptureById(db, id)) return json404('Capture not found');
         return Response.json({ tags: getCaptureTags(db, id) });
       }
-      if (method === 'POST') {
+      if (method === 'POST' || method === 'DELETE') {
         if (!getCaptureById(db, id)) return json404('Capture not found');
         const body = await safeJson(req);
         const tagValue = body?.tag;
         const tag = typeof tagValue === 'string' ? tagValue.trim() : '';
         if (!tag) return Response.json({ error: '"tag" is required' }, { status: 400 });
         try {
-          addTagToCapture(db, id, tag);
+          if (method === 'POST') addTagToCapture(db, id, tag);
+          else removeTagFromCapture(db, id, tag);
         } catch (err: any) {
           return Response.json({ error: err?.message ?? 'Invalid tag' }, { status: 400 });
         }
-        return Response.json({ ok: true, tag });
+        return Response.json({ ok: true, tags: getCaptureTags(db, id) });
       }
     }
 
@@ -595,9 +597,27 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
     return `/?${params.toString()}`;
   };
 
+  const activeFilterDefinitions: Array<[string, string, string]> = [
+    ['q', 'Search', q],
+    ['title', 'Title', url.searchParams.get('title') ?? ''],
+    ['url', 'URL', url.searchParams.get('url') ?? ''],
+    ['domain', 'Domain', domain],
+    ['tag', 'Tag', tag],
+    ['dateFrom', 'From', url.searchParams.get('dateFrom') ?? ''],
+    ['dateTo', 'To', url.searchParams.get('dateTo') ?? ''],
+    ['status', 'Status', url.searchParams.get('status') ?? ''],
+    ['sort', 'Sort', url.searchParams.has('sort') ? sort : ''],
+  ];
+  const activeFilters = activeFilterDefinitions.filter(([, , value]) => value);
+  const activeFilterBar = activeFilters.length
+    ? `<div class="active-filters" aria-label="Active filters"><span class="active-filters-label">Active</span>${activeFilters.map(([key, label, value]) =>
+        `<a class="filter-chip" href="${esc(filterHref(key, ''))}" aria-label="Clear ${esc(label)} filter"><span>${esc(label)}: ${esc(value)}</span><b aria-hidden="true">×</b></a>`
+      ).join('')}<a class="clear-filters" href="/">Clear all</a></div>`
+    : '';
+
   const tagCloud = tags.length
     ? `<div class="tag-cloud">${tags.map((t) =>
-        `<a class="tag${tag === t.name ? ' active' : ''}" href="${filterHref('tag', t.name)}">${esc(t.name)} <span>${t.count}</span></a>`
+        `<a class="tag${tag === t.name ? ' active' : ''}" href="${esc(filterHref('tag', tag === t.name ? '' : t.name))}"${tag === t.name ? ' aria-label="Clear selected tag filter"' : ''}>${esc(t.name)} <span>${t.count}</span></a>`
       ).join('')}</div>`
     : '';
 
@@ -631,6 +651,8 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
             ${downloadActions}
             <div class="item-menu-group item-menu-manage">
               <span class="item-menu-label">Manage</span>
+              <button class="manage-tags" data-id="${c.id}" type="button" aria-expanded="false" aria-controls="tag-editor-${c.id}">Manage tags…</button>
+              <div class="tag-editor" id="tag-editor-${c.id}" data-id="${c.id}" hidden></div>
               <button class="recapture" data-id="${c.id}" type="button">Recapture</button>
               <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button">Delete…</button>
             </div>
@@ -647,7 +669,7 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
         ${sourceHref ? `<span aria-hidden="true">·</span><a class="original-link" href="${esc(sourceHref)}" rel="noopener noreferrer" target="_blank">Original <span aria-hidden="true">↗</span></a>` : ''}
         ${c.warnings ? '<span class="warnings" title="Capture has warnings" aria-label="Capture has warnings">⚠</span>' : ''}
       </div>
-      ${captureTags.length ? `<div class="item-tags" aria-label="Tags">${captureTags.map((itemTag) => `<a class="tag" href="${filterHref('tag', itemTag)}">${esc(itemTag)}</a>`).join('')}</div>` : ''}
+      ${captureTags.length ? `<div class="item-tags" aria-label="Tags">${captureTags.map((itemTag) => `<a class="tag${tag === itemTag ? ' active' : ''}" href="${esc(filterHref('tag', tag === itemTag ? '' : itemTag))}"${tag === itemTag ? ' aria-label="Clear selected tag filter"' : ''}>${esc(itemTag)}</a>`).join('')}</div>` : ''}
       ${c.warnings ? `<details class="capture-warnings"><summary>Capture warnings</summary><ul>${parseWarnings(c.warnings).map((w) => `<li>${esc(w)}</li>`).join('')}</ul></details>` : ''}
       ${c.error ? `<div class="capture-error">${esc(c.error)}</div>` : ''}
     </li>`;
@@ -682,9 +704,9 @@ input[type=search],input[type=url],input[type=date],select{width:100%;min-width:
 button,.Button{-webkit-appearance:none;appearance:none;display:inline-flex;align-items:center;justify-content:center;height:32px;min-height:32px;padding:0 12px;border:1px solid var(--border);border-radius:6px;background:var(--canvas-subtle);color:var(--fg);font:600 12px/1 var(--font);text-decoration:none;white-space:nowrap;box-shadow:var(--shadow);cursor:pointer}button:hover,.Button:hover{background:var(--canvas-default);border-color:var(--fg-muted)}button:disabled{opacity:.55;cursor:wait}.Button--primary{border-color:rgba(27,31,36,.15);background:var(--success);color:#fff}.Button--primary:hover{background:var(--success-hover);border-color:rgba(27,31,36,.15)}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .capture-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}.capture-status{display:none;grid-column:1/-1;padding:10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--canvas-subtle);color:var(--fg-muted);font-size:13px}.capture-status[data-state]{display:block}.capture-status[data-state=success]{border-color:color-mix(in srgb,var(--success) 55%,var(--border));background:color-mix(in srgb,var(--success) 12%,var(--canvas-default));color:var(--fg)}.capture-status[data-state=error]{border-color:var(--danger);background:var(--danger-muted);color:var(--fg)}.capture-status a{font-weight:600}
 .filter-form{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px 8px;align-items:end}.FormControl{display:flex;min-width:0;flex-direction:column;gap:6px}.FormControl-label{color:var(--fg);font-size:12px;font-weight:600;line-height:1.25}.FormControl--q{grid-column:span 3}.FormControl--title{grid-column:span 2}.FormControl--url{grid-column:span 3}.FormControl--date{grid-column:span 2}.FormControl--status{grid-column:span 4}.FormControl--sort,.FormControl--limit{grid-column:span 2}.filter-submit{grid-column:span 4;align-self:end}
-.tag-cloud{padding:12px 16px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--border)}.tag{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border:1px solid transparent;border-radius:2em;background:var(--canvas-subtle);color:var(--accent);font-size:12px;font-weight:600;text-decoration:none}.tag:hover{border-color:var(--border)}.tag.active{background:var(--accent-emphasis);color:#fff}.tag span{color:inherit;opacity:.75}
+.active-filters{padding:10px 16px;display:flex;align-items:center;flex-wrap:wrap;gap:6px;border-top:1px solid var(--border)}.active-filters-label{margin-right:2px;color:var(--fg-muted);font-size:12px;font-weight:600}.filter-chip{display:inline-flex;align-items:center;gap:7px;max-width:320px;padding:3px 8px;border:1px solid var(--border);border-radius:2em;background:var(--canvas-subtle);color:var(--fg);font-size:12px;text-decoration:none}.filter-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.filter-chip b{color:var(--fg-muted);font-size:15px;line-height:1}.filter-chip:hover{border-color:var(--fg-muted);background:var(--canvas-default)}.clear-filters{margin-left:4px;font-size:12px;font-weight:600}.tag-cloud{padding:12px 16px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--border)}.tag{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border:1px solid transparent;border-radius:2em;background:var(--canvas-subtle);color:var(--accent);font-size:12px;font-weight:600;text-decoration:none}.tag:hover{border-color:var(--border)}.tag.active{background:var(--accent-emphasis);color:#fff}.tag span{color:inherit;opacity:.75}
 .results-header{min-height:48px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);background:var(--canvas-subtle)}.results-summary{color:var(--fg-muted)}.results-summary strong{color:var(--fg)}.failed-link{font-size:12px;text-decoration:none}.failed-link:hover{text-decoration:underline}
-ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;border-bottom:1px solid var(--border-muted)}.item:last-child{border-bottom:0}.item:hover{background:color-mix(in srgb,var(--canvas-subtle) 55%,transparent)}.item-heading{display:flex;gap:16px;align-items:flex-start}.item-title{min-width:0;flex:1}.item-title a{color:var(--accent);font-size:16px;font-weight:600;text-decoration:none}.item-title a:hover{text-decoration:underline}.item-facts{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:5px;color:var(--fg-muted);font-size:12px}.item-facts a{color:inherit;text-decoration:none}.item-facts a:hover{color:var(--accent);text-decoration:underline}.domain{font-weight:600}.item-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.item-more{position:relative;flex:0 0 auto}.item-more>summary{display:inline-flex;align-items:center;justify-content:center;min-height:32px;padding:0 10px;border:1px solid transparent;border-radius:6px;color:var(--fg-muted);font-size:12px;font-weight:600;cursor:pointer;list-style:none}.item-more>summary::-webkit-details-marker{display:none}.item-more>summary::after{content:'▾';margin-left:5px;font-size:10px}.item-more>summary:hover,.item-more[open]>summary{border-color:var(--border);background:var(--canvas-default);color:var(--fg)}.item-menu{position:absolute;z-index:20;top:calc(100% + 4px);right:0;width:230px;padding:6px 0;border:1px solid var(--border);border-radius:8px;background:var(--canvas-default);box-shadow:0 8px 24px rgba(31,35,40,.18)}.item-menu-group{padding:6px}.item-menu-group+.item-menu-group{border-top:1px solid var(--border-muted)}.item-menu-label{display:block;padding:2px 8px 5px;color:var(--fg-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.item-menu a,.item-menu button{display:flex;width:100%;min-height:34px;height:auto;align-items:center;justify-content:flex-start;gap:7px;margin:0;padding:7px 8px;border:0;border-radius:5px;background:transparent;box-shadow:none;color:var(--fg);font:13px/1.3 var(--font);text-align:left;text-decoration:none}.item-menu a:hover,.item-menu button:hover{background:var(--canvas-subtle)}.item-menu .delete{color:var(--danger)}.item-menu .delete:hover{background:var(--danger-muted)}.capture-warnings,.capture-error{margin-top:8px;color:#9a6700;font-size:12px}.capture-warnings ul{list-style:disc;padding-left:20px}.capture-error{color:var(--danger)}.empty-state{padding:40px 16px;color:var(--fg-muted);text-align:center}
+ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;border-bottom:1px solid var(--border-muted)}.item:last-child{border-bottom:0}.item:hover{background:color-mix(in srgb,var(--canvas-subtle) 55%,transparent)}.item-heading{display:flex;gap:16px;align-items:flex-start}.item-title{min-width:0;flex:1}.item-title a{color:var(--accent);font-size:16px;font-weight:600;text-decoration:none}.item-title a:hover{text-decoration:underline}.item-facts{display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-top:5px;color:var(--fg-muted);font-size:12px}.item-facts a{color:inherit;text-decoration:none}.item-facts a:hover{color:var(--accent);text-decoration:underline}.domain{font-weight:600}.item-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.item-more{position:relative;flex:0 0 auto}.item-more>summary{display:inline-flex;align-items:center;justify-content:center;min-height:32px;padding:0 10px;border:1px solid transparent;border-radius:6px;color:var(--fg-muted);font-size:12px;font-weight:600;cursor:pointer;list-style:none}.item-more>summary::-webkit-details-marker{display:none}.item-more>summary::after{content:'▾';margin-left:5px;font-size:10px}.item-more>summary:hover,.item-more[open]>summary{border-color:var(--border);background:var(--canvas-default);color:var(--fg)}.item-menu{position:absolute;z-index:20;top:calc(100% + 4px);right:0;width:230px;padding:6px 0;border:1px solid var(--border);border-radius:8px;background:var(--canvas-default);box-shadow:0 8px 24px rgba(31,35,40,.18)}.item-menu-group{padding:6px}.item-menu-group+.item-menu-group{border-top:1px solid var(--border-muted)}.item-menu-label{display:block;padding:2px 8px 5px;color:var(--fg-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}.item-menu a,.item-menu button{display:flex;width:100%;min-height:34px;height:auto;align-items:center;justify-content:flex-start;gap:7px;margin:0;padding:7px 8px;border:0;border-radius:5px;background:transparent;box-shadow:none;color:var(--fg);font:13px/1.3 var(--font);text-align:left;text-decoration:none}.item-menu a:hover,.item-menu button:hover{background:var(--canvas-subtle)}.item-menu .delete{color:var(--danger)}.item-menu .delete:hover{background:var(--danger-muted)}.tag-editor{margin:3px 2px 7px;padding:8px;border:1px solid var(--border-muted);border-radius:6px;background:var(--canvas-subtle)}.tag-editor-list{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}.tag-editor-pill{display:inline-flex;align-items:center;gap:3px;padding:2px 3px 2px 7px;border:1px solid var(--border);border-radius:2em;background:var(--canvas-default);font-size:12px}.item-menu .tag-editor-remove{display:inline-flex;width:24px;min-height:24px;height:24px;padding:0;justify-content:center;border-radius:50%;color:var(--danger);font-size:16px}.tag-editor-empty,.tag-editor-status{margin:0 0 7px;color:var(--fg-muted);font-size:12px}.tag-editor-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px}.tag-editor-form input{min-width:0;height:32px;padding:5px 8px}.item-menu .tag-editor-form button{width:auto;min-height:32px;height:32px;padding:0 9px;border:1px solid var(--border);background:var(--canvas-default);font-weight:600}.capture-warnings,.capture-error{margin-top:8px;color:#9a6700;font-size:12px}.capture-warnings ul{list-style:disc;padding-left:20px}.capture-error{color:var(--danger)}.empty-state{padding:40px 16px;color:var(--fg-muted);text-align:center}
 .pagination{padding:8px 0 24px;display:flex;justify-content:center;gap:8px}.pagination a{display:inline-flex;padding:5px 12px;border:1px solid transparent;border-radius:6px;color:var(--accent);font-weight:600;text-decoration:none}.pagination a:hover{border-color:var(--border);background:var(--canvas-default)}
 @media(max-width:800px){.filter-form{grid-template-columns:repeat(4,minmax(0,1fr))}.FormControl--q{grid-column:1/-1}.FormControl--title,.FormControl--url,.FormControl--date,.FormControl--status{grid-column:span 2}.FormControl--sort,.FormControl--limit{grid-column:span 1}.filter-submit{grid-column:1/-1}.item-menu{position:fixed;left:16px;right:16px;top:auto;bottom:16px;width:auto;max-height:calc(100vh - 32px);overflow:auto}}
 @media(max-width:600px){.app-header-inner{min-height:56px;padding:0 16px}.page{padding:16px}.page-heading h1{font-size:20px}.Box-body{padding:12px}.capture-form{grid-template-columns:minmax(0,1fr)}.capture-form button{width:100%}.filter-form{grid-template-columns:repeat(2,minmax(0,1fr))}.FormControl--q,.FormControl--title,.FormControl--url,.FormControl--status,.filter-submit{grid-column:1/-1}.FormControl--date,.FormControl--sort,.FormControl--limit{grid-column:span 1}input[type=search],input[type=url],input[type=date],select,button,.Button{height:44px;min-height:44px}input[type=date]::-webkit-date-and-time-value{min-height:32px}.item{padding:16px}.item-more>summary{min-height:44px}.item-menu{position:fixed;left:16px;right:16px;top:auto;bottom:16px;width:auto;max-height:calc(100vh - 32px);overflow:auto}.item-menu a,.item-menu button{min-height:44px}.results-header{align-items:flex-start;flex-direction:column}.app-context{display:none}}
@@ -722,6 +744,7 @@ ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;borde
       <label class="FormControl FormControl--limit"><span class="FormControl-label">Per page</span><select name="limit"><option${limit === 25 ? ' selected' : ''}>25</option><option${limit === 50 ? ' selected' : ''}>50</option><option${limit === 100 ? ' selected' : ''}>100</option><option${limit === 200 ? ' selected' : ''}>200</option></select></label>
       <button class="filter-submit" type="submit">Apply filters</button>
     </form></div>
+    ${activeFilterBar}
     ${tagCloud}
   </section>
   <section class="Box results-box" aria-label="Capture results">
