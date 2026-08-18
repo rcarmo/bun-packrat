@@ -35,7 +35,18 @@ jobs:
       - name: Type-check
         run: bun run typecheck
       - name: Install Chromium for browser tests
-        run: bunx playwright install --with-deps chromium
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_chromium() {
+            timeout --signal=TERM --kill-after=30s 5m bunx playwright install --with-deps chromium
+          }
+          if ! install_chromium; then
+            echo 'First Chromium installation attempt timed out or failed; retrying once.' >&2
+            sleep 10
+            install_chromium
+          fi
       - name: Test
         run: bun test
 
