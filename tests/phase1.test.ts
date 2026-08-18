@@ -13,7 +13,7 @@ import { normaliseUrl } from '../src/capture/url.js';
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
 import { getOrCreateUrl, insertCapture } from '../src/db/index.js';
-import { formatImageRecoveryWarning, hasPdfUrlHint, waitForCaptureReadiness } from '../src/capture/pipeline.js';
+import { closePlaywrightResource, formatImageRecoveryWarning, hasPdfUrlHint, waitForCaptureReadiness } from '../src/capture/pipeline.js';
 
 let db: Database;
 
@@ -65,6 +65,14 @@ describe('direct PDF URL hints', () => {
     expect(hasPdfUrlHint('https://example.com/report.PDF?download=1')).toBe(true);
     expect(hasPdfUrlHint('https://example.com/download?file=report.pdf')).toBe(true);
     expect(hasPdfUrlHint('https://example.com/article?format=pdf')).toBe(false);
+  });
+});
+
+describe('bounded Playwright cleanup', () => {
+  test('does not let a hung browser close block a completed capture', async () => {
+    expect(await closePlaywrightResource({ close: async () => await new Promise(() => {}) }, 10)).toBe(false);
+    expect(await closePlaywrightResource({ close: async () => {} }, 100)).toBe(true);
+    expect(await closePlaywrightResource({ close: async () => { throw new Error('already closed'); } }, 100)).toBe(true);
   });
 });
 

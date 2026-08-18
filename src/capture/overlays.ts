@@ -16,7 +16,7 @@ export const DISMISS_OVERLAYS_JS = `
   // Only remove known controls when they are small enough to be chrome rather
   // than page content. Never match broad terms such as "newsletter": Substack
   // uses newsletter-post on the article itself.
-  ['cookie', 'consent', 'gdpr', 'subscribe-widget', 'signup-widget', 'popup', 'modal', 'paywall']
+  ['cookie', 'consent', 'gdpr', 'subscribe-widget', 'signup-widget', 'popup', 'modal', 'paywall', 'fc-dialog']
     .forEach(kw => {
       document.querySelectorAll(\`[class*="\${kw}" i],[id*="\${kw}" i]\`).forEach(el => {
         if ((el.textContent || '').trim().length < 4000) remove.add(el);

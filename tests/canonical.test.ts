@@ -84,9 +84,16 @@ describe('canonical capture formats', () => {
     expect(html).toContain('data:image/png;base64,');
   });
 
-  test('passes legacy HTML through unchanged', () => {
-    const legacy = '<!doctype html><html><body><p>Legacy</p></body></html>';
-    expect(renderStoredCaptureHtml({ html: Buffer.from(legacy), compression: 'none' })).toBe(legacy);
+  test('passes ordinary legacy HTML through while removing blocking consent overlays at render time', () => {
+    const legacy = '<!doctype html><html><body style="overflow:hidden"><article><h1>Legacy</h1><p>' + 'Readable article text. '.repeat(30) + '</p></article><div class="fc-consent-root">Consent wall</div><div id="cookie-law-info-bar" style="position:fixed;z-index:999">Cookies</div></body></html>';
+    const rendered = renderStoredCaptureHtml({ html: Buffer.from(legacy), compression: 'none' });
+    expect(rendered).toContain('<h1>Legacy</h1>');
+    expect(rendered).not.toContain('fc-consent-root');
+    expect(rendered).not.toContain('cookie-law-info-bar');
+    expect(rendered).not.toContain('overflow:hidden');
+    const article = deriveStoredArticleHtml({ html: Buffer.from(legacy), compression: 'none' }, 'https://example.com/article');
+    expect(article).toContain('Readable article text');
+    expect(article).not.toContain('Consent wall');
   });
 
   test('derives an article from MHTML without full-page navigation', () => {

@@ -35,21 +35,59 @@ export function detectStoredCaptureFormat(bytes: Uint8Array): StoredCaptureForma
   throw new Error('Stored capture is neither HTML nor Chromium MHTML');
 }
 
-/** Return safe, standalone HTML for browser rendering and HTML/PDF export. */
+/** Return safe, standalone HTML for browser rendering and HTML/PDF export.
+ * Rendering-time cleanup never changes the byte-exact canonical capture. */
 export function renderStoredCaptureHtml(row: StoredBody): string {
   const bytes = readStoredCaptureBytes(row);
-  if (detectStoredCaptureFormat(bytes) === 'html') return bytes.toString('utf8');
-  return renderMhtmlToHtml(bytes.toString('utf8'));
+  const html = detectStoredCaptureFormat(bytes) === 'html'
+    ? bytes.toString('utf8')
+    : renderMhtmlToHtml(bytes.toString('utf8'));
+  return removeArchivedOverlays(html);
+}
+
+/** Remove known blocking consent chrome from a disposable rendered document.
+ * Keep broad terms such as newsletter out of this list: they are frequently
+ * used on real article containers. */
+export function removeArchivedOverlays(html: string): string {
+  const { document } = parseHTML(html);
+  const selectors = [
+    '.fc-consent-root', '#cookie-law-info-bar', '#cookie-law-info-again',
+    '#onetrust-consent-sdk', '.qc-cmp2-container', '.cc-window',
+  ];
+  let removed = 0;
+  for (const selector of selectors) {
+    document.querySelectorAll(selector).forEach((element) => {
+      if ((element.textContent ?? '').trim().length <= 4000) {
+        element.remove();
+        removed++;
+      }
+    });
+  }
+  document.querySelectorAll('[class*="cookie" i],[id*="cookie" i],[class*="consent" i],[id*="consent" i],[class*="gdpr" i],[id*="gdpr" i]').forEach((element) => {
+    const style = element.getAttribute('style') ?? '';
+    if ((/position\s*:\s*fixed/i.test(style) || /z-index\s*:/i.test(style)) && (element.textContent ?? '').trim().length <= 4000) {
+      element.remove();
+      removed++;
+    }
+  });
+  if (!removed) return html;
+  if (document.body) {
+    const style = document.body.getAttribute('style') ?? '';
+    const unlocked = style.replace(/(?:^|;)\s*overflow\s*:\s*hidden\s*;?/gi, ';overflow:auto;');
+    if (unlocked !== style) document.body.setAttribute('style', unlocked);
+  }
+  return document.toString();
 }
 
 /** Return an article-oriented document for Markdown and EPUB derivation. */
 export function deriveStoredArticleHtml(row: StoredBody, baseUrl: string): string {
-  const bytes = readStoredCaptureBytes(row);
-  if (detectStoredCaptureFormat(bytes) === 'html') return bytes.toString('utf8');
-
-  const fullPage = renderMhtmlToHtml(bytes.toString('utf8'));
+  const fullPage = renderStoredCaptureHtml(row);
   const extracted = extractContent(fullPage, baseUrl);
-  const source = extracted.articleHtml ?? parseHTML(fullPage).document.body?.innerHTML ?? fullPage;
+  const parsedFullPage = parseHTML(fullPage).document;
+  const source = parsedFullPage.querySelector('.packrat-content')?.innerHTML
+    ?? extracted.articleHtml
+    ?? parsedFullPage.body?.innerHTML
+    ?? fullPage;
   // Sanitise the fragment inside a complete document. linkedom otherwise adds
   // synthetic head/body children to a fragment root, which can leak nested
   // document elements into EPUB and Markdown derivations.

@@ -199,6 +199,15 @@ describe('agent capture API', () => {
     expect(page).toContain('Download PDF');
   });
 
+  test('serves byte-exact canonical downloads for both MHTML and legacy HTML', async () => {
+    const canonical = await fetch(`${base}/captures/${canonicalId}?raw=1`);
+    expect(canonical.headers.get('content-type')).toBe('multipart/related');
+    expect(Buffer.from(await canonical.arrayBuffer()).equals(Buffer.from(MHTML))).toBe(true);
+    const legacy = await fetch(`${base}/captures/${legacyId}?raw=1`);
+    expect(legacy.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(Buffer.from(await legacy.arrayBuffer()).equals(Buffer.from(LEGACY_HTML))).toBe(true);
+  });
+
   test('extracts every native format and preserves legacy availability semantics', async () => {
     const expectedTypes: Record<string, string> = {
       mhtml: 'multipart/related',

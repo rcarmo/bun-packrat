@@ -473,10 +473,11 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
   if (!row?.html || !meta) return new Response('Capture not found', { status: 404 });
 
   const storedBytes = readStoredCaptureBytes(row);
-  if (raw && detectStoredCaptureFormat(storedBytes) === 'mhtml') {
+  if (raw) {
+    const format = detectStoredCaptureFormat(storedBytes);
     return new Response(new Blob([Uint8Array.from(storedBytes).buffer]), { headers: {
-      'Content-Type': 'multipart/related',
-      'Content-Disposition': `attachment; filename="capture-${id}.mhtml"`,
+      'Content-Type': format === 'mhtml' ? 'multipart/related' : 'text/html; charset=utf-8',
+      'Content-Disposition': `attachment; filename="capture-${id}.${format === 'mhtml' ? 'mhtml' : 'html'}"`,
       'X-Content-Type-Options': 'nosniff',
     }});
   }

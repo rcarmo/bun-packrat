@@ -113,7 +113,10 @@ function buildZip(entries: ZipEntry[]): Uint8Array {
 // HTML → Markdown walker
 // ---------------------------------------------------------------------------
 
-export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ originalUrl: string | null; alt: string; title: string | null }> } = {}): { markdown: string; assets: Array<{ name: string; data: Uint8Array }> } {
+export function htmlToMarkdown(html: string, opts: {
+  remoteImages?: Array<{ originalUrl: string | null; alt: string; title: string | null }>;
+  baseUrl?: string;
+} = {}): { markdown: string; assets: Array<{ name: string; data: Uint8Array }> } {
   const { document } = parseHTML(html);
   const assets: Array<{ name: string; data: Uint8Array }> = [];
   let assetIndex = 0;
@@ -160,10 +163,13 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
         return `\n\n${text}\n\n`;
       }
       case 'a': {
-        const href = node.getAttribute('href') ?? '';
+        const href = resolveHttpUrl(node.getAttribute('href') ?? '', opts.baseUrl);
         const text = inner().trim();
         if (!text) return '';
-        if (href && !href.startsWith('#')) return `[${text}](${formatMarkdownDestination(href)})`;
+        // The image walker already uses a linked original as its destination.
+        // Wrapping generated image Markdown creates malformed nested links.
+        if (node.querySelector?.('img')) return text;
+        if (href) return `[${text}](${formatMarkdownDestination(href)})`;
         return text;
       }
       case 'img': {
@@ -171,12 +177,16 @@ export function htmlToMarkdown(html: string, opts: { remoteImages?: Array<{ orig
         const alt = node.getAttribute('alt') ?? '';
         const title = node.getAttribute('title') ?? '';
         const remote = opts.remoteImages?.[imageIndex++];
-        if (opts.remoteImages) {
+        if (opts.remoteImages?.length) {
           const remoteAlt = escapeMarkdownText(remote?.alt ?? alt);
           if (!remote?.originalUrl) return remoteAlt ? `*[Image: ${remoteAlt}]*` : '';
           const remoteTitle = remote.title ? ` "${remote.title.replace(/"/g, '\\"')}"` : '';
           return `![${remoteAlt}](${formatMarkdownDestination(remote.originalUrl)}${remoteTitle})`;
         }
+        const linkedOriginal = resolveHttpUrl(node.closest?.('a')?.getAttribute('href') ?? '', opts.baseUrl);
+        const sourceOriginal = resolveHttpUrl(src, opts.baseUrl);
+        const original = linkedOriginal ?? sourceOriginal;
+        if (original) return `![${escapeMarkdownText(alt)}](${formatMarkdownDestination(original)}${title ? ` "${title.replace(/"/g, '\\"')}"` : ''})`;
         if (src.startsWith('data:')) {
           // Extract data: URL asset
           const match = src.match(/^data:([^;]+);base64,(.+)$/s);
@@ -259,6 +269,15 @@ function escapeMarkdownText(value: string): string {
   return value.replace(/([\\\[\]*_`])/g, '\\$1');
 }
 
+function resolveHttpUrl(value: string, baseUrl?: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  try {
+    const resolved = new URL(trimmed, baseUrl);
+    return /^https?:$/.test(resolved.protocol) ? resolved.toString() : null;
+  } catch { return null; }
+}
+
 function formatMarkdownDestination(value: string): string {
   // Keep ordinary URLs readable in raw Markdown. Angle-bracket destinations
   // are only needed when Markdown delimiters could otherwise be ambiguous.
@@ -286,7 +305,10 @@ export async function renderRemoteMarkdown(db: Database, captureId: number): Pro
   if (!row?.html) return null;
   const articleHtml = deriveStoredArticleHtml(row, meta.final_url);
   const imageSources = getCaptureImageSources(db, captureId);
-  const { markdown } = htmlToMarkdown(articleHtml, { remoteImages: imageSources });
+  const { markdown } = htmlToMarkdown(articleHtml, {
+    remoteImages: imageSources.length ? imageSources : undefined,
+    baseUrl: meta.final_url,
+  });
   return { markdown, title: meta.title ?? `capture-${captureId}` };
 }
 

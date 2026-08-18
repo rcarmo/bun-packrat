@@ -102,7 +102,7 @@ The `confirm` value must be the capture ID as a string or the JSON value `true`.
 | `GET /captures/:id/markdown` | Server-rendered Markdown with remote images disabled by default. |
 | `GET /captures/:id/markdown?remote=1` | Markdown view with original remote images enabled. |
 | `GET /captures/:id/markdown.raw` | Raw Markdown with original image URLs. |
-| `GET /captures/:id?raw=1` | Canonical MHTML attachment for fresh captures; stored HTML for legacy captures. |
+| `GET /captures/:id?raw=1` | Byte-exact canonical MHTML attachment for fresh captures or byte-exact stored HTML for legacy captures. |
 | `GET|HEAD /captures/:id/source.pdf` | Inline byte-exact source PDF with single-byte `Range` support. Add `?download=1` for attachment disposition. |
 | `GET|HEAD /captures/:id/source.txt` | Extracted source-PDF text. Encrypted or failed extraction returns `409`. |
 

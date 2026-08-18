@@ -62,6 +62,17 @@ beforeEach(() => {
 afterEach(() => db.close());
 
 describe('Markdown table generation', () => {
+  test('resolves legacy relative links and emits linked images without malformed nesting', () => {
+    const result = htmlToMarkdown(`<!doctype html><html><body><div class="packrat-content">
+      <p><a href="/about">About us</a></p>
+      <figure><a href="/uploads/full.webp"><img src="data:image/webp;base64,AAAA" alt="Board photo"></a></figure>
+    </div></body></html>`, { baseUrl:'https://example.com/posts/item' });
+    expect(result.markdown).toContain('[About us](https://example.com/about)');
+    expect(result.markdown).toContain('![Board photo](https://example.com/uploads/full.webp)');
+    expect(result.markdown).not.toContain('[![');
+    expect(result.markdown).not.toContain('*[Image:');
+  });
+
   test('escapes literal pipes and flattens cell line breaks', () => {
     const result = htmlToMarkdown('<html><body><table><tr><th>Name</th><th>Notes</th></tr><tr><td>A | B</td><td>First<br>Second</td></tr></table></body></html>');
     expect(result.markdown).toContain('| A \\| B | FirstSecond |');

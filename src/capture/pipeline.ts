@@ -11,8 +11,8 @@ import type { Database } from 'bun:sqlite';
 import type { PackratConfig, CaptureResult } from '../types.js';
 import { normaliseUrl, guardSsrfResolved, UrlValidationError } from './url.js';
 import { extractContent } from './extract.js';
+import { removeArchivedOverlays } from './canonical.js';
 import { collectImageSources } from './assets.js';
-import { DISMISS_OVERLAYS_JS } from './overlays.js';
 import {
   attachSourcePdf,
   beginPdfExtraction,
@@ -37,7 +37,7 @@ export interface PipelineOptions {
   force?: boolean;
 }
 
-const TOOL_VERSION = 'packrat/0.2.2';
+const TOOL_VERSION = 'packrat/0.2.3';
 
 /**
  * Run the full capture pipeline for a URL.
@@ -189,8 +189,8 @@ export async function capturePage(
           maxBytes: config.maxPdfSizeBytes,
           timeoutMs: config.captureTimeoutMs,
         });
-        await context.close();
-        await browser.close();
+        await closePlaywrightResource(context, 5_000);
+        await closePlaywrightResource(browser, 5_000);
         browser = null;
         db.exec('DELETE FROM captures WHERE id=?', [captureId]);
         return await storeDirectPdf(rawUrl, normalisedUrl, downloaded, opts, startedAt);
@@ -214,16 +214,15 @@ export async function capturePage(
 
     if (config.captureSettlingMs > 0) await page.waitForTimeout(config.captureSettlingMs);
 
-    // 5. Scroll lazy content into view and dismiss bounded overlays before the
-    // canonical snapshot. MHTML keeps Chromium's rendered DOM and loaded
-    // resources together without a second asset-fetching pass.
+    // 5. Materialise lazy content, then preserve Chromium's rendered page as
+    // canonical MHTML. Consent cleanup is applied only to the disposable HTML
+    // used for extraction and later reading; it never mutates stored bytes.
     await scrollPage(page);
     await materialiseLazyImages(page);
-    await page.evaluate(DISMISS_OVERLAYS_JS).catch(() => {});
-    const renderedHtml = await page.content();
+    const renderedHtml = removeArchivedOverlays(await page.content());
     const cdp = await context.newCDPSession(page);
     const snapshot = await cdp.send('Page.captureSnapshot', { format: 'mhtml' }) as { data: string };
-    await context.close();
+    await closePlaywrightResource(context, 5_000);
 
     const canonicalBytes = Buffer.from(snapshot.data, 'utf-8');
     if (canonicalBytes.byteLength > config.maxPageSizeBytes) {
@@ -336,7 +335,19 @@ export async function capturePage(
     );
     throw err;
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (browser) await closePlaywrightResource(browser, 5_000);
+  }
+}
+
+export async function closePlaywrightResource(resource: { close(): Promise<unknown> }, timeoutMs = 5_000): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      resource.close().then(() => true, () => true),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -384,7 +395,7 @@ async function storeDirectPdf(
     html: null, compression: 'none', content_hash: downloaded.sha256, html_size: null,
     title: downloaded.filename, author: null, site_name: null, published_at: null,
     excerpt: null, lang: null, extracted_text: downloaded.filename ?? rawUrl,
-    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.2', warnings: null,
+    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.3', warnings: null,
   });
   db.transaction(() => {
     attachSourcePdf(db, {
