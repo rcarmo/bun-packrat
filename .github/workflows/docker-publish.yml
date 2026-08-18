@@ -122,13 +122,22 @@ jobs:
               if (error.status === 404) { core.info('No container package exists yet.'); versions = []; }
               else throw error;
             }
-            const tagged = versions.filter((version) => version.metadata?.container?.tags?.length)
+            const releases = versions
+              .filter((version) => version.metadata?.container?.tags?.some((tag) => /^\d+\.\d+\.\d+$/.test(tag)))
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-            const untagged = versions.filter((version) => !version.metadata?.container?.tags?.length);
-            const retained = tagged.slice(0, keep);
-            const cutoff = retained.length ? new Date(retained[retained.length - 1].created_at) : new Date();
-            const stale = [...tagged.slice(keep), ...untagged.filter((version) => new Date(version.created_at) < cutoff)];
-            core.info(`Keeping ${retained.length} tagged versions; deleting ${stale.length} stale versions.`);
+            const retained = releases.slice(0, keep);
+            const retainedIds = new Set(retained.map((version) => version.id));
+            // GHCR exposes the untagged platform manifests behind a multi-platform
+            // index as separate package versions. Keep a safety window around the
+            // oldest retained release so cleanup cannot make its tag unpullable.
+            const safetyWindowMs = 24 * 60 * 60 * 1000;
+            const cutoff = retained.length
+              ? new Date(new Date(retained[retained.length - 1].created_at).getTime() - safetyWindowMs)
+              : new Date(0);
+            const stale = versions.filter((version) =>
+              !retainedIds.has(version.id) && new Date(version.created_at) < cutoff
+            );
+            core.info(`Keeping ${retained.length} releases and their manifest safety window; deleting ${stale.length} stale package versions.`);
             for (const version of stale) {
               try { await remove(version.id); }
               catch (error) { core.warning(`Could not delete package version ${version.id}: ${error.message}`); }
