@@ -56,6 +56,16 @@ The entry point reads `/config/.env`. To run with host-matching file ownership, 
 | `make test` | Run tests on the host. |
 | `make clean` | Remove containers, volumes and the local image. |
 
+## Published images
+
+Pushing a semantic version tag such as `v0.2.0` publishes a multi-platform image to `ghcr.io/rcarmo/bun-packrat`. The workflow produces full, major/minor, major and `latest` tags for `linux/amd64` and `linux/arm64`, uses the GitHub Actions build cache, and attaches build provenance.
+
+The release workflow retains the five newest tagged package versions. It also removes stale untagged versions older than the retained set and keeps the five newest workflow runs. Publication runs only for `v*` tag pushes; ordinary branches and manual dispatches cannot publish or prune images.
+
+```bash
+docker pull ghcr.io/rcarmo/bun-packrat:latest
+```
+
 ## Local Bun process
 
 Install dependencies and ensure Playwright can find Chromium:

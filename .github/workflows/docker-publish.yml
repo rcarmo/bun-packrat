@@ -1,0 +1,162 @@
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Type-check
+        run: bun run typecheck
+      - name: Test
+        run: bun test
+
+  publish:
+    name: Publish multi-platform image
+    needs: test
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=bun-packrat
+            org.opencontainers.image.description=SQLite-backed single-file web archive
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Inspect published image
+        run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+
+  cleanup-package:
+    name: Keep five package versions
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Prune old package versions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const keep = 5;
+            const { owner, repo } = context.repo;
+            const packageName = repo.toLowerCase();
+            const common = { package_type: 'container', package_name: packageName, per_page: 100, state: 'active' };
+            const isOrganisation = (await github.rest.repos.get({ owner, repo })).data.owner.type === 'Organization';
+            const list = isOrganisation
+              ? () => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, { ...common, org: owner })
+              : () => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByUser, { ...common, username: owner });
+            const remove = isOrganisation
+              ? (id) => github.rest.packages.deletePackageVersionForOrg({ package_type: 'container', package_name: packageName, org: owner, package_version_id: id })
+              : (id) => github.rest.packages.deletePackageVersionForUser({ package_type: 'container', package_name: packageName, username: owner, package_version_id: id });
+
+            let versions;
+            try { versions = await list(); }
+            catch (error) {
+              if (error.status === 404) { core.info('No container package exists yet.'); versions = []; }
+              else throw error;
+            }
+            const tagged = versions.filter((version) => version.metadata?.container?.tags?.length)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const untagged = versions.filter((version) => !version.metadata?.container?.tags?.length);
+            const retained = tagged.slice(0, keep);
+            const cutoff = retained.length ? new Date(retained[retained.length - 1].created_at) : new Date();
+            const stale = [...tagged.slice(keep), ...untagged.filter((version) => new Date(version.created_at) < cutoff)];
+            core.info(`Keeping ${retained.length} tagged versions; deleting ${stale.length} stale versions.`);
+            for (const version of stale) {
+              try { await remove(version.id); }
+              catch (error) { core.warning(`Could not delete package version ${version.id}: ${error.message}`); }
+            }
+
+  cleanup-runs:
+    name: Keep five workflow runs
+    needs: [publish, cleanup-package]
+    if: ${{ always() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Prune old workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const keep = 5;
+            const { owner, repo } = context.repo;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: 'docker-publish.yml',
+              per_page: 100,
+            });
+            const oldRuns = runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(keep);
+            core.info(`Keeping ${Math.min(keep, runs.length)} workflow runs; deleting ${oldRuns.length}.`);
+            for (const run of oldRuns) {
+              if (run.id === context.runId) continue;
+              try { await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: run.id }); }
+              catch (error) { core.warning(`Could not delete workflow run ${run.id}: ${error.message}`); }
+            }

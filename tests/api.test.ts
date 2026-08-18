@@ -100,6 +100,22 @@ describe('agent capture API', () => {
     expect(index).not.toContain('name="mode"');
     expect(index).not.toContain('Capture mode');
     expect(index).toContain('input[type=date]::-webkit-date-and-time-value');
+
+    const writeDb = openDatabase(dbPath);
+    const metadataUrl = getOrCreateUrl(writeDb, 'https://metadata.example.com/item', 'https://metadata.example.com/item');
+    const metadataId = insertCapture(writeDb, { url_id:metadataUrl.id, source_url:metadataUrl.original, final_url:metadataUrl.original, html:null, compression:'none', content_hash:null, html_size:null, title:'Metadata record', author:null, site_name:null, published_at:null, excerpt:null, lang:null, extracted_text:'Metadata record', mode:'metadata_only', status:'succeeded', capture_tool:'test', warnings:JSON.stringify(['No usable body']) });
+    writeDb.exec("INSERT INTO archivebox_imports(ab_id,ab_url,ab_timestamp,capture_id,outcome,outcome_detail,processed_at) VALUES ('meta-source',?, '1700000000.1',?, 'imported','metadata_only',strftime('%Y-%m-%dT%H:%M:%SZ','now'))", [metadataUrl.original, metadataId]);
+    writeDb.close();
+    const metadataPage = await fetch(`${base}/captures/${metadataId}`, { headers:{ Accept:'text/html' } });
+    expect(metadataPage.status).toBe(200);
+    const metadataHtml = await metadataPage.text();
+    expect(metadataHtml).toContain('No archived page body is available.');
+    expect(metadataHtml).toContain('meta-source');
+    expect(metadataHtml).not.toContain('href="/captures/' + metadataId + '/article"');
+    const updatedIndex = await fetch(base).then((response) => response.text());
+    expect(updatedIndex).toContain(`href="/captures/${metadataId}">Metadata record</a>`);
+    expect(updatedIndex).toContain('Metadata and provenance');
+    expect(updatedIndex).not.toContain(`href="/captures/${metadataId}/export/html"`);
     expect(index).toContain('class="capture-size" title="Canonical capture size"');
     expect(index).toContain('>API fixtures</span>');
     expect(index).not.toContain('Full-page capture');

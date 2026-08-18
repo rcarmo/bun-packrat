@@ -67,12 +67,13 @@ const server = Bun.serve({
       const id = parseInt(detailMatch[1], 10);
       if (url.searchParams.has('raw')) return serveCaptureHtml(db, id, true);
       const acceptsHtml = (req.headers.get('accept') ?? '').includes('text/html');
+      const capture = getCaptureById(db, id);
+      if (!capture) return json404();
       // JSON API
       if (!acceptsHtml || url.searchParams.has('meta')) {
-        const c = getCaptureById(db, id);
-        if (!c) return json404();
-        return Response.json({ ...summariseCapture(c), tags: getCaptureTags(db, id), aliases: getCaptureAliases(db, id), deleteImpact: getCaptureDeleteImpact(db, id) });
+        return Response.json({ ...summariseCapture(capture), tags: getCaptureTags(db, id), aliases: getCaptureAliases(db, id), deleteImpact: getCaptureDeleteImpact(db, id) });
       }
+      if (capture.mode === 'metadata_only') return renderMetadataOnlyCapture(db, capture);
       return serveCaptureHtml(db, id, false);
     }
 
@@ -405,6 +406,34 @@ async function serveCaptureHtml(db: Database, id: number, raw: boolean): Promise
   });
 }
 
+function renderMetadataOnlyCapture(db: Database, capture: CaptureRow): Response {
+  const sourceHref = safeExternalHref(capture.source_url);
+  const warnings = parseWarnings(capture.warnings);
+  const tags = getCaptureTags(db, capture.id);
+  const provenance = db.query<{ ab_id: string; ab_timestamp: string | null; ab_status: string | null; outcome: string | null; outcome_detail: string | null }, [number]>(
+    'SELECT ab_id,ab_timestamp,ab_status,outcome,outcome_detail FROM archivebox_imports WHERE capture_id=? ORDER BY id LIMIT 1',
+  ).get(capture.id);
+  const rows: Array<[string, string]> = [
+    ['Source URL', capture.source_url],
+    ['Captured', capture.captured_at],
+    ['Status', capture.status],
+    ['Storage mode', 'Metadata only'],
+  ];
+  if (provenance?.ab_id) rows.push(['ArchiveBox snapshot ID', provenance.ab_id]);
+  if (provenance?.ab_timestamp) rows.push(['ArchiveBox timestamp', provenance.ab_timestamp]);
+  if (provenance?.outcome) rows.push(['Migration outcome', provenance.outcome]);
+  if (provenance?.outcome_detail) rows.push(['Migration detail', provenance.outcome_detail]);
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(capture.title ?? 'Metadata-only capture')}</title><style>:root{color-scheme:light dark}*{box-sizing:border-box}body{max-width:820px;margin:0 auto;padding:1rem 1rem 3rem;font:16px/1.55 system-ui,sans-serif;overflow-wrap:anywhere}nav{display:flex;gap:1rem;align-items:center;margin:0 -1rem 2rem;padding:.7rem 1rem;background:#222;color:#fff}nav a{color:#9cf}h1{line-height:1.2}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border:1px solid #888;text-align:left;vertical-align:top}th{width:12rem}code{overflow-wrap:anywhere}aside{margin:1.5rem 0;padding:1rem;border:1px solid #b88700;border-radius:.4rem;background:color-mix(in srgb,#b88700 12%,transparent)}.tags{display:flex;flex-wrap:wrap;gap:.5rem}.tag{padding:.15rem .55rem;border:1px solid #888;border-radius:2rem}@media(max-width:520px){th,td{display:block;width:100%}th{border-bottom:0}}</style></head><body><nav><a href="/">Archive</a>${sourceHref ? `<a href="${esc(sourceHref)}" rel="noopener noreferrer">Original source</a>` : ''}</nav><main><h1>${esc(capture.title ?? '(no title)')}</h1><aside><strong>No archived page body is available.</strong> This source row is retained for search, provenance and reconciliation and does not offer Full page, Article, Markdown or export views.</aside><table><tbody>${rows.map(([name,value]) => `<tr><th>${esc(name)}</th><td>${name === 'Source URL' && sourceHref ? `<a href="${esc(sourceHref)}" rel="noopener noreferrer">${esc(value)}</a>` : `<code>${esc(value)}</code>`}</td></tr>`).join('')}</tbody></table>${tags.length ? `<h2>Tags</h2><div class="tags">${tags.map((tag) => `<span class="tag">${esc(tag)}</span>`).join('')}</div>` : ''}${warnings.length ? `<h2>Warnings</h2><ul>${warnings.map((warning) => `<li>${esc(warning)}</li>`).join('')}</ul>` : ''}</main></body></html>`;
+  return new Response(html, { headers: {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': csp(),
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  }});
+}
+
 async function serveArticleHtml(db: Database, id: number): Promise<Response> {
   const meta = getCaptureById(db, id);
   const row = getCaptureHtml(db, id);
@@ -470,27 +499,26 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
   const items = rows.map((c) => {
     const sourceHref = safeExternalHref(c.source_url);
     const captureTags = getCaptureTags(db, c.id);
-    const exceptionalMode = c.mode === 'metadata_only' ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : c.mode === 'article' ? 'Legacy article' : null;
+    const metadataOnly = c.mode === 'metadata_only';
+    const primaryHref = metadataOnly ? `/captures/${c.id}` : `/captures/${c.id}/article`;
+    const viewActions = metadataOnly
+      ? `<a href="/captures/${c.id}">Metadata and provenance</a>`
+      : `<a href="/captures/${c.id}">Full page</a><a href="/captures/${c.id}/markdown">Markdown</a>`;
+    const downloadActions = metadataOnly ? '' : `<div class="item-menu-group"><span class="item-menu-label">Download</span><a class="download-link" href="/captures/${c.id}/export/html"><span aria-hidden="true">↓</span> HTML</a><a class="download-link" href="/captures/${c.id}/export/md"><span aria-hidden="true">↓</span> Markdown ZIP</a><a class="download-link" href="/captures/${c.id}/export/epub"><span aria-hidden="true">↓</span> EPUB</a><a class="download-link" href="/captures/${c.id}/export/pdf"><span aria-hidden="true">↓</span> PDF</a></div>`;
+    const exceptionalMode = metadataOnly ? 'Metadata only' : c.mode === 'imported_singlefile' ? 'Imported page' : c.mode === 'article' ? 'Legacy article' : null;
     const attribution = captureAttribution(c.author, c.site_name, getDomain(c.source_url));
     return `
     <li class="item">
       <div class="item-heading">
-        <div class="item-title"><a href="/captures/${c.id}/article">${esc(c.title ?? '(no title)')}</a></div>
+        <div class="item-title"><a href="${primaryHref}">${esc(c.title ?? '(no title)')}</a></div>
         <details class="item-more">
           <summary>More</summary>
           <div class="item-menu" aria-label="More actions for ${esc(c.title ?? 'capture')}">
             <div class="item-menu-group">
               <span class="item-menu-label">View</span>
-              <a href="/captures/${c.id}">Full page</a>
-              <a href="/captures/${c.id}/markdown">Markdown</a>
+              ${viewActions}
             </div>
-            <div class="item-menu-group">
-              <span class="item-menu-label">Download</span>
-              <a class="download-link" href="/captures/${c.id}/export/html"><span aria-hidden="true">↓</span> HTML</a>
-              <a class="download-link" href="/captures/${c.id}/export/md"><span aria-hidden="true">↓</span> Markdown ZIP</a>
-              <a class="download-link" href="/captures/${c.id}/export/epub"><span aria-hidden="true">↓</span> EPUB</a>
-              <a class="download-link" href="/captures/${c.id}/export/pdf"><span aria-hidden="true">↓</span> PDF</a>
-            </div>
+            ${downloadActions}
             <div class="item-menu-group item-menu-manage">
               <span class="item-menu-label">Manage</span>
               <button class="recapture" data-id="${c.id}" type="button">Recapture</button>

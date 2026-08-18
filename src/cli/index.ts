@@ -5,6 +5,8 @@
  *
  * Commands:
  *   capture <url>                   Capture a URL (blocking)
+ *   import archivebox --data-root   Import or inventory ArchiveBox
+ *   import status                   Inspect ArchiveBox import outcomes
  *   search  <query>                 Full-text search
  *   list    [--limit N]             List recent captures
  *   export  <id> --format <fmt>     Export a capture (html|md|epub|pdf)
@@ -24,6 +26,7 @@ import { exportMarkdownZip } from '../export/markdown.js';
 import { exportEpub } from '../export/epub.js';
 import { exportPdf } from '../export/pdf.js';
 import { loadConfig } from '../config.js';
+import { importArchiveBox } from '../import/archivebox.js';
 
 const config = loadConfig();
 const args = process.argv.slice(2);
@@ -52,6 +55,43 @@ switch (command) {
         htmlSize: result.htmlSize, contentHash: result.contentHash,
         warnings: result.warnings,
       }, null, 2));
+    } catch (err: any) {
+      console.error(JSON.stringify({ ok: false, error: err?.message ?? String(err) }, null, 2));
+      process.exit(1);
+    }
+    break;
+  }
+
+  // ── import ───────────────────────────────────────────────────────────────
+  case 'import': {
+    const subcommand = args[1];
+    if (subcommand === 'status') {
+      const outcomes = db.query<{ outcome: string | null; count: number }, []>('SELECT outcome,count(*) count FROM archivebox_imports GROUP BY outcome ORDER BY outcome').all();
+      const recentFailures = db.query<any, []>("SELECT ab_id,ab_url,ab_timestamp,outcome_detail,processed_at FROM archivebox_imports WHERE outcome='failed' ORDER BY processed_at DESC LIMIT 20").all();
+      console.log(JSON.stringify({ ok: true, outcomes, recentFailures }, null, 2));
+      break;
+    }
+    if (subcommand !== 'archivebox') {
+      console.error('Usage: packrat import archivebox --data-root <path> [--database <index.sqlite3>] [--dry-run|--verify-only]');
+      process.exit(1);
+    }
+    const dataRoot = optionValue(args, '--data-root');
+    if (!dataRoot) { console.error('Usage: packrat import archivebox --data-root <path>'); process.exit(1); }
+    try {
+      const report = await importArchiveBox(db, {
+        dataRoot,
+        sourceDatabase: optionValue(args, '--database') ?? undefined,
+        dryRun: args.includes('--dry-run'),
+        verifyOnly: args.includes('--verify-only'),
+        retryFailed: args.includes('--retry-failed'),
+        limit: optionValue(args, '--limit') ? boundedInt(optionValue(args, '--limit'), 0, 1, Number.MAX_SAFE_INTEGER) : undefined,
+        compression: config.htmlCompression,
+        maxCandidateBytes: optionValue(args, '--max-candidate-bytes') ? boundedInt(optionValue(args, '--max-candidate-bytes'), config.maxPageSizeBytes, 1, Number.MAX_SAFE_INTEGER) : config.maxPageSizeBytes,
+        reportJson: optionValue(args, '--report-json') ?? undefined,
+        reportHtml: optionValue(args, '--report-html') ?? undefined,
+      });
+      console.log(JSON.stringify(report, null, 2));
+      if (!report.ok) process.exitCode = 1;
     } catch (err: any) {
       console.error(JSON.stringify({ ok: false, error: err?.message ?? String(err) }, null, 2));
       process.exit(1);
@@ -185,6 +225,10 @@ switch (command) {
     const allFlag = args.includes('--all');
     const idIdx = args.indexOf('--id');
     const singleId = idIdx !== -1 ? parseInt(args[idIdx + 1], 10) : null;
+    if (!allFlag && !singleId) {
+      console.error(JSON.stringify({ ok: false, error: 'Usage: packrat verify --all | --id <N>' }));
+      process.exit(1);
+    }
 
     // SQLite integrity check first
     const integrity = db
@@ -198,25 +242,41 @@ switch (command) {
     }
 
     // Content-hash verification
-    const captures = singleId
-      ? [getCaptureById(db, singleId)].filter(Boolean)
-      : db.query<any, []>(`SELECT id, content_hash, html, compression FROM captures WHERE status='succeeded'`).all();
+    // Never materialise every canonical BLOB in one query. Archive-scale
+    // databases can contain gigabytes of bodies, so select IDs first and load
+    // exactly one body for hashing at a time.
+    const bodyQuery = db.query<{ id: number; content_hash: string | null; html: Uint8Array | null; compression: string }, [number]>(
+      'SELECT id, content_hash, html, compression FROM captures WHERE id=?',
+    );
+    const idBatchQuery = db.query<{ id: number }, [number, number]>(`
+      SELECT id FROM captures
+      WHERE id > ? AND status='succeeded' AND content_hash IS NOT NULL AND html IS NOT NULL
+      ORDER BY id LIMIT ?
+    `);
 
     let ok = 0, fail = 0;
     const failures: Array<{ id: number; expected: string; actual: string }> = [];
-
-    for (const c of captures) {
-      if (!c?.content_hash || !c?.html) continue;
+    let lastId = 0;
+    const ids = singleId ? [singleId] : [];
+    while (singleId ? ids.length > 0 : true) {
+      const batch = singleId ? ids.splice(0) : idBatchQuery.all(lastId, 100);
+      if (batch.length === 0) break;
+      for (const entry of batch) {
+        const id = typeof entry === 'number' ? entry : entry.id;
+        lastId = id;
+        const c = bodyQuery.get(id);
+        if (!c?.content_hash || !c.html) continue;
       const raw: Buffer =
         c.compression === 'gzip'
           ? Buffer.from(Bun.gunzipSync(Buffer.from(c.html)))
-          : Buffer.from(c.html as Uint8Array);
+          : Buffer.from(c.html);
       const actual = createHash('sha256').update(raw).digest('hex');
-      if (actual === c.content_hash) {
-        ok++;
-      } else {
-        fail++;
-        failures.push({ id: c.id, expected: c.content_hash, actual });
+        if (actual === c.content_hash) {
+          ok++;
+        } else {
+          fail++;
+          failures.push({ id: c.id, expected: c.content_hash, actual });
+        }
       }
     }
 
@@ -303,6 +363,11 @@ Usage: bun run src/cli/index.ts <command> [args]
 
 Commands:
   capture <url> [--force]            Archive a URL; --force bypasses freshness reuse
+  import archivebox --data-root DIR  Import or resume an ArchiveBox collection
+         [--database FILE] [--dry-run|--verify-only] [--retry-failed]
+         [--limit N] [--max-candidate-bytes N]
+         [--report-json FILE] [--report-html FILE]
+  import status                      Show ArchiveBox migration outcomes
   search  <query> [filters]          Full-text search captures
           --domain --tag --mode --status --sort relevance|newest|oldest
   list    [--limit N]                List recent successful captures (default 20)

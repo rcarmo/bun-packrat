@@ -1,6 +1,6 @@
 # Testing
 
-Packrat uses the Bun test runner and TypeScript's no-emit type check. The current suite contains 122 tests across 13 files.
+Packrat uses the Bun test runner and TypeScript's no-emit type check. The current suite contains 128 tests across 14 files.
 
 ## Full gate
 
@@ -17,6 +17,7 @@ The EPUB suite calls `epubcheck` when it is installed. The compliance test skips
 | File | Scope |
 |---|---|
 | `tests/api.test.ts` | Search and content HTTP API. |
+| `tests/archivebox-import.test.ts` | Read-only inventory, offline conversion, fallback, resumption and deduplication. |
 | `tests/assets.test.ts` | Link normalisation, image selection and tracking-pixel removal. |
 | `tests/canonical.test.ts` | MHTML detection, MIME decoding and safe rendering. |
 | `tests/db.test.ts` | Schema, migrations and database helpers. |

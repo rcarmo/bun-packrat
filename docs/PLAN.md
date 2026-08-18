@@ -1,6 +1,6 @@
 # Implementation plan
 
-Canonical MHTML capture, offline Article rendering and the content API are implemented. ArchiveBox import and hostname cutover are planned.
+Canonical MHTML capture, offline Article rendering, the content API and ArchiveBox import are implemented. Hostname cutover remains planned.
 
 Requirements: [PRD.md](PRD.md)
 
@@ -59,18 +59,20 @@ Requirements: [PRD.md](PRD.md)
 | Markdown export tests | `tests/markdown.test.ts` | ✅ |
 | EPUB export tests | `tests/epub.test.ts` | ✅ |
 
-### Phase 3 — ArchiveBox importer 🔜
+### Phase 3 — ArchiveBox importer ✅
 
-Blocked on cutover decision. Live ArchiveBox instance (`192.168.1.123`, VMID 119 on `tnas`) is shut down and read-only.
+Implemented and rehearsed against the complete ArchiveBox collection on VM 119:
 
-Planned work:
-- Read-only discovery pass against ArchiveBox `index.sqlite3`
-- Versioned schema adapters (ArchiveBox 0.7.x, dev)
-- Candidate priority: `singlefile.html` → rendered HTML → original response → WARC → metadata-only
-- Resumable batch import with atomic checkpoints
-- Deduplication by content hash
-- Full reconciliation report (JSON + HTML) — every source snapshot gets one terminal outcome
-- `archive import archivebox --data-root <path>` CLI command
+- read-only discovery against `index.sqlite3` and snapshot directories;
+- versioned `archivebox-django-core-v1` schema adapter;
+- bounded candidate order: `singlefile.html` → rendered `output.html` → metadata-only;
+- offline normalisation with active content and unresolved resources removed;
+- durable per-snapshot checkpoints and `--retry-failed` resumption;
+- exact canonical-body deduplication with auditable provenance;
+- JSON and HTML reconciliation reports;
+- CLI dry-run, import, status and verification operations.
+
+The full rehearsal reconciled 2,690 source snapshots as 2,688 imports and two exact duplicates. A consistent backup and a clean restored copy both passed SQLite integrity and all 1,255 stored-body hashes.
 
 ### Phase 4 — EPUB and print ✅
 
@@ -139,7 +141,8 @@ bun-packrat/
 │   │   ├── markdown.ts                # HTML → Markdown view + ZIP packager
 │   │   ├── render-markdown.ts         # safe generated-Markdown renderer
 │   │   └── pdf.ts                     # Playwright print → PDF
-│   ├── import/                        # (Phase 3) ArchiveBox importer — not yet implemented
+│   ├── import/
+│   │   └── archivebox.ts              # read-only ArchiveBox adapter and resumable importer
 │   ├── queue/
 │   │   └── index.ts                   # JobQueue: SQLite-backed in-process poller
 │   ├── config.ts                      # env-driven config with defaults
@@ -148,6 +151,7 @@ bun-packrat/
 ├── tests/
 │   ├── db.test.ts                     # schema, migrations, query helpers
 │   ├── api.test.ts                    # agent search/content API integration tests
+│   ├── archivebox-import.test.ts      # discovery, conversion, fallback, resumption, deduplication
 │   ├── canonical.test.ts              # MHTML detection, decoding and safe rendering
 │   ├── epub.test.ts                   # EPUB 3 export (structure + spec compliance)
 │   ├── features.test.ts               # delete/paging/Markdown provenance
@@ -179,7 +183,7 @@ bun-packrat/
 | # | Decision | Status |
 |---|---|---|
 | 1 | HTML storage format: raw UTF-8 vs gzip vs zstd | Wired up (none/gzip via `PACKRAT_HTML_COMPRESSION`); zstd deferred pending Bun native support |
-| 2 | Body deduplication: one body row per content hash or per-capture | Deferred to Phase 3; current schema stores one body per capture row |
+| 2 | Body deduplication: one body row per content hash or per-capture | ArchiveBox import reuses an existing capture for exact canonical hashes and records `duplicate`; ordinary captures remain one body per row |
 | 3 | Maximum captured-page and per-asset size | Defaults set (20 MB page, 5 MB asset); configurable via env |
 | 4 | Freshness interval before a repeated submission creates a new capture | Implemented; 24h default via `PACKRAT_FRESHNESS_SECONDS`, forced recapture available |
 | 5 | Authenticated captures | Basic authentication required by default; capture-session credential injection remains deferred |

@@ -49,7 +49,36 @@ No asset directory, queue database or search index rebuild is required.
 bun run src/cli/index.ts verify --all
 ```
 
-Verification runs SQLite's integrity check and recomputes SHA-256 hashes from uncompressed stored bodies. A non-zero exit status indicates a failed database or hash check.
+Verification runs SQLite's integrity check and recomputes SHA-256 hashes from uncompressed stored bodies. Bodies are loaded and hashed one at a time, so verification remains bounded for archive-scale databases. A non-zero exit status indicates a failed database or hash check.
+
+## ArchiveBox migration rehearsal
+
+Keep ArchiveBox stopped or otherwise quiescent, and mount its data root read-only. A container rehearsal can use:
+
+```bash
+docker run --rm --network none \
+  -e PACKRAT_DB=/data/packrat.sqlite \
+  -e PACKRAT_AUTH_DISABLED=1 \
+  -e PACKRAT_HTML_COMPRESSION=gzip \
+  -v /srv/archivebox/data:/archivebox:ro \
+  -v /srv/packrat-migration-test:/data \
+  ghcr.io/rcarmo/bun-packrat:latest \
+  bun run src/cli/index.ts import archivebox \
+    --data-root /archivebox \
+    --report-json /data/archivebox-import.json \
+    --report-html /data/archivebox-import.html
+```
+
+Use `--dry-run` first. The importer defaults to 20 MB per HTML candidate to keep memory bounded on small hosts. An oversized or malformed SingleFile page falls back to rendered HTML; if no candidate passes validation, the source becomes an auditable metadata-only capture rather than disappearing.
+
+After reconciliation:
+
+1. run `verify --all` against the imported database;
+2. create a consistent backup with `backup`;
+3. restore that backup under a separate filename;
+4. run `verify --all` against the restored copy;
+5. test representative SingleFile, rendered-HTML and metadata-only records;
+6. keep ArchiveBox read-only until cutover and rollback periods are agreed.
 
 ## Queue recovery
 

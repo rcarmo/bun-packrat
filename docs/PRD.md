@@ -316,10 +316,10 @@ The importer must tolerate ArchiveBox schema differences by using versioned adap
 For each ArchiveBox snapshot, choose the first usable representation in this order:
 
 1. `singlefile.html` that passes structural and asset validation;
-2. saved rendered HTML with local assets, converted into self-contained HTML;
-3. original response HTML, sanitised and converted;
-4. a WARC response replayed or extracted when a supported WARC is available;
-5. metadata-only record when no usable body exists.
+2. saved rendered `output.html`, normalised into self-contained HTML;
+3. metadata-only record when no usable body exists.
+
+Original-response HTML with asset-tree conversion and WARC replay are not present in the rehearsed source collection and remain unsupported. They require explicit adapters before being added to the candidate order.
 
 A screenshot or PDF may help identify a source snapshot but is not sufficient for a successful content import. These files are not copied into the new database unless a later requirement explicitly adds them.
 
@@ -485,13 +485,13 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ### ArchiveBox import
 
-- [ ] A dry run inventories the complete ArchiveBox source without writing captures.
-- [ ] Import can be interrupted and resumed.
-- [ ] Every ArchiveBox source snapshot receives one terminal migration outcome.
-- [ ] Existing valid `singlefile.html` captures import without live network access.
-- [ ] Duplicate bodies do not create unreported duplicate storage.
-- [ ] The final reconciliation report matches the source snapshot count.
-- [ ] A statistically useful sample from each source format opens successfully on iOS and desktop browsers.
+- [x] A dry run inventories the complete ArchiveBox source without writing captures.
+- [x] Import can be interrupted and resumed.
+- [x] Every ArchiveBox source snapshot receives one terminal migration outcome.
+- [x] Existing valid `singlefile.html` captures import without live network access.
+- [x] Duplicate bodies do not create unreported duplicate storage.
+- [x] The final reconciliation report matches the source snapshot count.
+- [x] A statistically useful sample from each available source format opens successfully on desktop Chromium; physical iOS Safari remains an operational cutover check.
 - [ ] ArchiveBox is not retired until the imported database has been backed up and restored on a clean instance.
 
 ### Markdown reading mode
@@ -543,7 +543,7 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - Add backup, restore and verification commands.
 - Add HTML and Markdown exports.
 
-### Phase 3 — ArchiveBox importer 🔜
+### Phase 3 — ArchiveBox importer ✅
 
 - Implement schema adapters and source inventory.
 - Convert SingleFile, rendered and original HTML sources.

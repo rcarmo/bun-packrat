@@ -15,7 +15,8 @@ The service runs on Bun with SQLite FTS5, an in-process job queue and Playwright
 - HTML, Markdown ZIP, EPUB 3 and on-demand PDF exports;
 - HTTP API, bookmarklet and Bun CLI;
 - HTTP Basic authentication by default;
-- consistent online backup and integrity verification.
+- consistent online backup and streaming integrity verification;
+- read-only, resumable ArchiveBox migration with reconciliation reports.
 
 ## Start with Docker
 
@@ -43,7 +44,7 @@ The default database path is `./data/packrat.db`.
 
 ## Project status
 
-Fresh capture, search, offline reading, export, deletion, backup and verification are implemented and tested. The ArchiveBox bulk importer and final hostname cutover are planned.
+Fresh capture, search, offline reading, export, deletion, backup, verification and the ArchiveBox bulk importer are implemented and tested. The final hostname cutover remains planned.
 
 See the [documentation index](docs/README.md) for setup, configuration, architecture, API, CLI and operations. Requirements and delivery status are tracked in the [product requirements](docs/PRD.md) and [implementation plan](docs/PLAN.md).
 

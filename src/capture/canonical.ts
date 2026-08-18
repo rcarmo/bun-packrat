@@ -62,6 +62,42 @@ export function deriveStoredArticleHtml(row: StoredBody, baseUrl: string): strin
   return `<!doctype html><html lang="${escapeAttr(extracted.lang ?? 'en')}"><head><meta charset="utf-8"><title>${escapeHtml(extracted.title ?? 'Archived page')}</title></head><body><div class="packrat-content">${body}</div></body></html>`;
 }
 
+export interface NormalisedImportedHtml {
+  html: string;
+  warnings: string[];
+}
+
+/** Normalise an existing standalone HTML capture without contacting its live
+ * source. Author CSS and inline image/font data are retained when safe; active
+ * content and unresolved resource dependencies are removed. */
+export function normaliseImportedHtml(raw: string, baseUrl: string): NormalisedImportedHtml {
+  const { document } = parseHTML(raw);
+  if (!document.documentElement || !document.body) throw new Error('Imported file is not an HTML document');
+  const warnings: string[] = [];
+  const beforeScripts = document.querySelectorAll('script,iframe,object,embed,form').length;
+  const beforeRemoteResources = document.querySelectorAll('[src],[srcset],link[href]').length;
+  const resources = new Map<string, MimePart>();
+
+  document.querySelectorAll('link[rel~="stylesheet" i],link[rel~="preload" i],link[rel~="modulepreload" i]').forEach((link) => link.remove());
+  document.querySelectorAll('style').forEach((style) => {
+    style.textContent = rewriteCss(style.textContent ?? '', baseUrl, resources);
+  });
+  const containmentStyle = document.createElement('style');
+  containmentStyle.textContent = 'html,body{max-width:100%;overflow-x:hidden}img,video,canvas,svg{max-width:100%;height:auto}pre{max-width:100%;overflow-x:auto}:not(pre)>code{overflow-wrap:anywhere;word-break:break-word}table{max-width:100%}';
+  const head = document.head ?? document.documentElement;
+  head.appendChild(containmentStyle);
+  installOfflineCsp(document, head);
+  sanitiseRenderedDocument(document, baseUrl, resources);
+
+  if (beforeScripts) warnings.push(`Removed ${beforeScripts} active element${beforeScripts === 1 ? '' : 's'}`);
+  if (beforeRemoteResources) warnings.push('Removed unresolved external or local resource references');
+  const html = '<!doctype html>\n' + document.toString().replace(/^<!doctype[^>]*>\s*/i, '');
+  if (!document.body?.textContent?.trim() && document.querySelectorAll('img').length === 0) {
+    throw new Error('Imported HTML has no usable body content');
+  }
+  return { html, warnings };
+}
+
 export function renderMhtmlToHtml(raw: string): string {
   const parsed = parseMhtml(raw);
   const resources = buildResourceMap(parsed);
@@ -90,14 +126,7 @@ export function renderMhtmlToHtml(raw: string): string {
   // The HTTP routes also set CSP headers, but exports are often opened from
   // disk. Replace source policies with a restrictive embedded policy so the
   // standalone document remains offline even outside Packrat.
-  document.querySelectorAll('meta[http-equiv]').forEach((meta) => {
-    const directive = (meta.getAttribute('http-equiv') ?? '').trim().toLowerCase();
-    if (directive === 'refresh' || directive === 'content-security-policy') meta.remove();
-  });
-  const cspMeta = document.createElement('meta');
-  cspMeta.setAttribute('http-equiv', 'Content-Security-Policy');
-  cspMeta.setAttribute('content', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
-  head.insertBefore(cspMeta, head.firstChild);
+  installOfflineCsp(document, head);
 
   document.querySelectorAll('[style]').forEach((element) => {
     const style = element.getAttribute('style');
@@ -292,6 +321,17 @@ function sanitiseRenderedDocument(document: Document, base: string, resources: M
       element.setAttribute('decoding', 'async');
     }
   });
+}
+
+function installOfflineCsp(document: Document, head: Element): void {
+  document.querySelectorAll('meta[http-equiv]').forEach((meta) => {
+    const directive = (meta.getAttribute('http-equiv') ?? '').trim().toLowerCase();
+    if (directive === 'refresh' || directive === 'content-security-policy') meta.remove();
+  });
+  const cspMeta = document.createElement('meta');
+  cspMeta.setAttribute('http-equiv', 'Content-Security-Policy');
+  cspMeta.setAttribute('content', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  head.insertBefore(cspMeta, head.firstChild);
 }
 
 function normaliseNavigationHref(value: string, base: string): string | null {

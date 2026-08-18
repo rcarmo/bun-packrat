@@ -13,6 +13,8 @@ The CLI opens the database specified by `PACKRAT_DB`, which defaults to `./data/
 | Command | Action |
 |---|---|
 | `capture <url> [--force]` | Capture a URL synchronously. `--force` bypasses freshness reuse. |
+| `import archivebox --data-root path [options]` | Inventory, import, resume or verify an ArchiveBox collection. |
+| `import status` | Report ArchiveBox migration outcomes and recent failures. |
 | `search <query> [filters]` | Search indexed captures and write JSON. |
 | `list [--limit N]` | List recent successful captures. Default: 20. |
 | `export <id> --format html\|md\|epub\|pdf [--output path]` | Generate one export. |
@@ -30,6 +32,48 @@ bun run src/cli/index.ts capture https://example.com/article --force
 ```
 
 The command writes the capture result as JSON. Browser progress and errors go to standard error.
+
+## ArchiveBox import
+
+Mount or expose the ArchiveBox data root read-only. The importer reads `index.sqlite3` and `archive/<timestamp>/` beneath that root and never contacts source websites.
+
+Inventory the source without writing capture or provenance rows:
+
+```bash
+bun run src/cli/index.ts import archivebox \
+  --data-root /srv/archivebox/data \
+  --dry-run \
+  --report-json archivebox-dry-run.json \
+  --report-html archivebox-dry-run.html
+```
+
+Run or resume the import:
+
+```bash
+PACKRAT_HTML_COMPRESSION=gzip \
+  bun run src/cli/index.ts import archivebox \
+  --data-root /srv/archivebox/data \
+  --report-json archivebox-import.json \
+  --report-html archivebox-import.html
+```
+
+Options:
+
+- `--database path` overrides the source `index.sqlite3` path;
+- `--dry-run` performs discovery and planning only;
+- `--verify-only` checks existing provenance and capture references;
+- `--retry-failed` retries only failed source rows while resuming all terminal outcomes;
+- `--limit N` processes a bounded prefix for rehearsals;
+- `--max-candidate-bytes N` overrides the default 20 MB per-candidate limit;
+- `--report-json path` and `--report-html path` write reconciliation reports.
+
+Candidate order is SingleFile, rendered `output.html`, then metadata-only. Malformed or oversized candidates fall through to the next representation. Each source snapshot receives an `imported`, `duplicate`, `skipped` or `failed` terminal outcome, and interrupted runs resume without importing successful rows twice.
+
+Inspect current outcomes:
+
+```bash
+bun run src/cli/index.ts import status
+```
 
 ## Search
 
