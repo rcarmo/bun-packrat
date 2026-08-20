@@ -1,4 +1,4 @@
-FROM oven/bun:1.3 AS base
+FROM oven/bun:1.4.0 AS base
 
 # ── System dependencies ───────────────────────────────────────────────────
 # Playwright Chromium headless-shell dependencies (Debian slim base)

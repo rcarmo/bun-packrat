@@ -174,7 +174,7 @@ bun-packrat/
 │   └── entrypoint.sh                  # PUID/PGID drop-privileges + /config/.env sourcing
 ├── .dockerignore
 ├── .gitignore
-├── Dockerfile                         # oven/bun:1.3 + Chromium headless-shell baked in
+├── Dockerfile                         # oven/bun:1.4.0 + Chromium headless-shell baked in
 ├── Makefile                           # build / run / stop / logs / shell / clean
 ├── README.md                          # concise project entry point
 ├── bun.lock
