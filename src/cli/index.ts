@@ -29,6 +29,8 @@ import { exportPdf } from '../export/pdf.js';
 import { loadConfig } from '../config.js';
 import { importArchiveBox } from '../import/archivebox.js';
 import { enrichArchiveBoxPdfs } from '../import/archivebox-pdf.js';
+import { readStoredCaptureBytes } from '../capture/canonical.js';
+import { migrateCaptureStorage } from '../db/storage-migration.js';
 
 const config = loadConfig();
 const args = process.argv.slice(2);
@@ -291,11 +293,8 @@ switch (command) {
         lastId = id;
         const c = bodyQuery.get(id);
         if (!c?.content_hash || !c.html) continue;
-      const raw: Buffer =
-        c.compression === 'gzip'
-          ? Buffer.from(Bun.gunzipSync(Buffer.from(c.html)))
-          : Buffer.from(c.html);
-      const actual = createHash('sha256').update(raw).digest('hex');
+        const raw = readStoredCaptureBytes(c);
+        const actual = createHash('sha256').update(raw).digest('hex');
         if (actual === c.content_hash) {
           ok++;
         } else {
@@ -319,7 +318,23 @@ switch (command) {
 
   // ── migrate ───────────────────────────────────────────────────────────────
   case 'migrate': {
-    console.log(JSON.stringify({ ok: true, message: 'All migrations applied' }));
+    if (args[1] === 'storage') {
+      try {
+        const rawLimit = optionValue(args, '--limit');
+        const limit = rawLimit ? strictPositiveInt(rawLimit, '--limit') : undefined;
+        const report = await migrateCaptureStorage(db, {
+          dryRun: args.includes('--dry-run'),
+          limit,
+        });
+        console.log(JSON.stringify(report, null, 2));
+        if (!report.ok) process.exitCode = 1;
+      } catch (err: any) {
+        console.error(JSON.stringify({ ok: false, error: err?.message ?? String(err) }, null, 2));
+        process.exitCode = 1;
+      }
+      break;
+    }
+    console.log(JSON.stringify({ ok: true, message: 'All schema migrations applied' }));
     break;
   }
 
@@ -373,6 +388,12 @@ function boundedInt(raw: string | null, fallback: number, min: number, max: numb
   return Number.isSafeInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
 }
 
+function strictPositiveInt(raw: string, name: string): number {
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
+  return value;
+}
+
 function summarise(c: any) {
   return {
     id: c.id, title: c.title, mode: c.mode, status: c.status,
@@ -403,6 +424,8 @@ Commands:
   backup  <dest.sqlite>              VACUUM INTO consistent backup
   verify  [--all] [--id <N>]         SQLite integrity + content-hash check
   migrate                            Run pending schema migrations
+  migrate storage [--dry-run]        Re-encode advantageous verified bodies as zstd
+                  [--limit N]
   status                             Print capture counts and DB size
   help                               Show this help
 
@@ -412,7 +435,7 @@ Environment:
   HOST                         HTTP server host      (0.0.0.0)
   PLAYWRIGHT_BROWSERS_PATH     Browser binaries dir  (/workspace/bin/pw-browsers)
   PACKRAT_CAPTURE_TIMEOUT_MS   Capture timeout ms    (60000)
-  PACKRAT_HTML_COMPRESSION     none | gzip           (none)
+  PACKRAT_HTML_COMPRESSION     none | auto            (auto)
   PACKRAT_BASE_URL             Service base URL      (http://localhost:3047)
   PACKRAT_FRESHNESS_SECONDS    Recent capture reuse  (86400)
 `);

@@ -1,199 +1,114 @@
-# Implementation plan
+# v0.3.0 implementation plan
 
-Release `v0.2.7` implements canonical MHTML and source-PDF capture, offline reading, the content API, queue recovery, ArchiveBox import and original-PDF enrichment. ArchiveBox hostname cutover and retirement checks remain planned operational work.
+Packrat v0.3.0 uses Bun 1.4 to add bounded image recompression for oversized MHTML and advantageous zstd compression for SQLite capture bodies. The v0.2.9 service is the implementation baseline.
 
 Requirements: [PRD.md](PRD.md)
 
-## Phases
+## Scope
 
-### Phase 1 — Database and capture proof ✅
+### Oversized MHTML fallback
 
-| Task | File(s) | Status |
-|---|---|---|
-| SQLite schema + FTS5 + triggers | `src/db/migrations/001_initial.sql` | ✅ |
-| Migration runner | `src/db/migrate.ts` | ✅ |
-| Database helpers | `src/db/index.ts` | ✅ |
-| Core types | `src/types.ts` | ✅ |
-| Config (env-driven) | `src/config.ts` | ✅ |
-| URL normaliser + SSRF guard | `src/capture/url.ts` | ✅ |
-| Legacy/article HTML sanitiser | `src/capture/sanitize.ts` | ✅ |
-| Legacy asset inliner and image provenance | `src/capture/assets.ts` | ✅ |
-| Readability derived-view extractor | `src/capture/extract.ts` | ✅ |
-| Playwright canonical MHTML pipeline | `src/capture/pipeline.ts` | ✅ |
-| MHTML decoder and safe full-page renderer | `src/capture/canonical.ts` | ✅ |
-| HTTP server (serve + submit) | `src/server.ts` | ✅ |
-| CLI entry point: capture, import, search, list, export, delete, backup, verify, migrate and status | `src/cli/index.ts` | ✅ |
-| Unit tests: schema | `tests/db.test.ts` | ✅ |
-| Unit tests: sanitiser | `tests/sanitize.test.ts` | ✅ |
-| Unit tests: URL normaliser | `tests/url.test.ts` | ✅ |
-| Phase 1 integration test | `tests/phase1.test.ts` | ✅ |
+1. Capture Chromium MHTML normally.
+2. Keep snapshots at or below `PACKRAT_MAX_PAGE_BYTES` byte-exact before storage compression.
+3. For an oversized snapshot, re-encode embedded JPEG, PNG and WebP MIME parts as WebP at quality 75. Process parts sequentially and replace a part only when the result is smaller.
+4. Rebuild the MHTML. Accept it if its uncompressed size is at or below the configured limit.
+5. If it is still oversized, apply greyscale WebP at quality 75 to eligible parts, again replacing only smaller results.
+6. Store the first rebuilt MHTML that fits. Discard the oversized original and all rejected candidates.
+7. Fail the capture through the existing failure path when neither candidate fits.
 
-### Phase 2 — Archive application ✅
+SVG, GIF, fonts and other MIME parts are unchanged. A successful fallback records a capture warning that identifies the colour or greyscale pass. Packrat does not retain an external original, article substitute or additional snapshot.
 
-| Task | File(s) | Status |
-|---|---|---|
-| In-process job queue (SQLite-backed) | `src/queue/index.ts` | ✅ |
-| Job DB helpers (create/claim/finish/recover) | `src/db/index.ts` | ✅ |
-| Tag management (add/get/list) | `src/db/index.ts` | ✅ |
-| Web UI (search, full filters/sorting, warnings, recapture, export links, pagination) | `src/server.ts` | ✅ |
-| HTML export | `src/export/html.ts` | ✅ |
-| Markdown + ZIP export | `src/export/markdown.ts` | ✅ |
-| EPUB 3 export | `src/export/epub.ts` | ✅ |
-| On-demand PDF export via Playwright | `src/export/pdf.ts` | ✅ |
-| Export routes on HTTP server | `src/server.ts` | ✅ |
-| Agent search/content API (`mhtml`, HTML, Markdown, ZIP, EPUB, rendered PDF and source PDF) | `src/server.ts` | ✅ |
-| Tags API | `src/server.ts` | ✅ |
-| Freshness reuse, forced recapture, aliases and notes | pipeline, DB, server | ✅ |
-| Permanent capture deletion (UI/API/CLI, latest repair, audit preservation) | DB, server, CLI | ✅ |
-| Offline simplified Article view with captured images | canonical renderer, server | ✅ |
-| Text-oriented Markdown mode with archived same-origin images and privacy-gated remote fallback | capture, DB, export, server | ✅ |
-| Matching counts and deterministic paging metadata | DB, server | ✅ |
-| Idempotency keys and queued-job cancellation | DB, HTTP API | ✅ |
-| HTTP Basic auth required by default | `src/config.ts`, `src/server.ts` | ✅ |
-| Capture duration/import counts and machine-readable `/api/status` metrics | `src/server.ts` | ✅ |
-| Authenticated human-readable queue monitor at `/status` | `src/server.ts` | ✅ |
-| Durable job attempt diagnostics, three-attempt limit and startup recovery | DB, queue | ✅ |
-| Bounded DNS/browser waits and process-exit capture watchdog | capture, queue | ✅ |
-| `backup` CLI | `src/cli/index.ts` | ✅ |
-| `verify` CLI (integrity + content-hash) | `src/cli/index.ts` | ✅ |
-| `export` CLI (html / md / epub / pdf) | `src/cli/index.ts` | ✅ |
-| Job queue tests | `tests/queue.test.ts` | ✅ |
-| Markdown export tests | `tests/markdown.test.ts` | ✅ |
-| EPUB export tests | `tests/epub.test.ts` | ✅ |
+### Capture-body compression
 
-### Phase 3 — ArchiveBox importer ✅
+- Attempt `Bun.zstdCompress()` for every accepted web capture or imported HTML body.
+- Store zstd only when its BLOB is smaller than the canonical bytes; otherwise store the canonical bytes with `compression='none'`.
+- Preserve `html_size` and `content_hash` as the size and SHA-256 of uncompressed canonical bytes.
+- Permanently support `none`, `gzip` and `zstd` in readers, exports and verification.
+- Keep source-PDF storage byte-exact and outside this compression policy.
 
-Implemented and rehearsed against the complete ArchiveBox collection on VM 119:
+### Existing-body migration
 
-- read-only discovery against `index.sqlite3` and snapshot directories;
-- versioned `archivebox-django-core-v1` schema adapter;
-- bounded candidate order: `singlefile.html` → rendered `output.html` → metadata-only;
-- offline normalisation with active content and unresolved resources removed;
-- durable per-snapshot checkpoints and `--retry-failed` resumption;
-- exact canonical-body deduplication with auditable provenance;
-- JSON and HTML reconciliation reports;
-- CLI dry-run, import, status and verification operations;
-- original-PDF enrichment from verified successful `wget` responses, with independent resumable outcomes.
+Add an idempotent `migrate storage` CLI operation:
 
-The full rehearsal reconciled 2,690 source snapshots as 2,688 imports and two exact duplicates. The deployed database later passed SQLite integrity and 1,259 stored-content hash checks after PDF enrichment and the `v0.2.7` upgrade.
+1. require a consistent backup before production use;
+2. read capture bodies sequentially;
+3. decompress each row according to its current marker;
+4. verify the existing canonical SHA-256 before any write;
+5. create a zstd candidate;
+6. update one row in one short transaction only when zstd is smaller than the current stored BLOB;
+7. retain `gzip` or `none` when either is smaller than or equal to zstd;
+8. persist one changed, retained or failed outcome per row so bounded reruns advance safely;
+9. report scanned, resumed, pending, changed, retained, failed, input and output byte totals;
+10. support dry-run and bounded rehearsal options;
+11. finish with SQLite integrity and full content-hash verification.
 
-### Phase 4 — EPUB and print ✅
+The migration does not run `VACUUM` automatically. The operator decides whether reclaimed free pages justify a separate maintenance window.
 
-| Task | Status |
-|---|---|
-| EPUB 3 builder — pure Bun ZIP, adapted from `rcarmo/bun-readlater-epub` | ✅ |
-| Asset extraction from stored data: URLs into EPUB manifest | ✅ |
-| Archive header stripped from EPUB article body | ✅ |
-| On-demand rendered PDF via Playwright print CSS — no file retained | ✅ |
-| Byte-exact direct source-PDF storage, range delivery and bounded PDF.js extraction | ✅ |
-| Cover-image metadata when a suitable embedded image exists | ✅ |
-| Real `epubcheck` release validation (conditional test) | ✅ |
-| EPUB suite (structure, mimetype offset, spec compliance, epubcheck) | ✅ |
+## Implementation sequence
 
-### Phase 5 — Cutover 🔜
+| # | Work | Main files | Required evidence |
+|---:|---|---|---|
+| 1 | Add MHTML MIME-part rewrite fixtures and failing tests | `tests/canonical.test.ts`, `tests/phase1.test.ts` | Normal snapshots unchanged; colour, greyscale and failure paths reproduced |
+| 2 | Add shared body codec helpers for `none`, `gzip` and `zstd` | `src/capture/canonical.ts`, `src/types.ts` | Round-trip and malformed-body tests |
+| 3 | Implement sequential `Bun.Image` recompression and MHTML rebuilding | `src/capture/recompress.ts`, `src/capture/pipeline.ts` | JPEG/PNG/WebP replacement, MIME header preservation and skip cases |
+| 4 | Add automatic advantageous zstd storage | capture pipeline, ArchiveBox importer, configuration | Stored codec selected by actual byte size; canonical hash unchanged |
+| 5 | Add `migrate storage` | `src/cli/index.ts`, storage migration module | Dry-run, interrupted rerun and per-row atomicity tests |
+| 6 | Add warnings, status/report fields and operational safeguards | pipeline, CLI, queue/container command | Fallback provenance and `--no-orphans` shutdown test |
+| 7 | Run the release gate and resource benchmarks | full test suite and production-like fixtures | Type check, tests, diff check, RSS, latency and offline rendering results |
+| 8 | Release and deploy v0.3.0 | package, workflow, production VM 119 | Immutable digest, backup, idle queue, migration report, `verify --all`, health and route checks |
 
-Import, PDF enrichment, reconciliation and clean-instance backup/restore verification are complete. ArchiveBox is stopped and its storage remains available read-only.
+## Test requirements
 
-Remaining steps:
-1. Redirect local `archivebox.local` / `archivebox` hostname to the Packrat service.
-2. Validate the service and rollback path during the agreed rollback period.
-3. Retire the ArchiveBox VM after the rollback checks pass.
+### Unit and integration
 
----
+- normal MHTML below the limit remains byte-exact;
+- a colour WebP quality-75 candidate is accepted when it fits;
+- a greyscale WebP quality-75 candidate is attempted only after the colour candidate remains oversized;
+- an image part is never replaced by a larger encoding;
+- SVG, GIF and non-image MIME parts remain unchanged;
+- MIME boundaries, `Content-Location`, transfer encoding and rewritten `Content-Type` remain valid;
+- fallback failure stores no oversized body;
+- successful fallback emits one deterministic warning;
+- `none`, `gzip` and `zstd` bodies produce identical canonical bytes;
+- new bodies use zstd only when it is smaller;
+- migration verifies the hash before update and retains the current codec when zstd does not win;
+- migration reruns safely after interruption;
+- verification checks mixed-codec databases.
 
-## Directory structure
+### Resource and browser checks
 
-```
-bun-packrat/
-├── docs/
-│   ├── README.md                      # documentation index
-│   ├── architecture.md                # system and data flow
-│   ├── api.md                         # HTTP API reference
-│   ├── cli.md                         # command-line reference
-│   ├── configuration.md               # environment contract
-│   ├── deployment.md                  # Docker and local setup
-│   ├── operations.md                  # backup, restore and recovery
-│   ├── testing.md                     # test and acceptance gates
-│   ├── PLAN.md                        # implementation status
-│   └── PRD.md                         # requirements baseline
-├── src/
-│   ├── capture/
-│   │   ├── assemble.ts                # legacy HTML archive shell
-│   │   ├── assets.ts                  # legacy inlining + image provenance
-│   │   ├── canonical.ts               # MHTML detection, decoding and safe rendering
-│   │   ├── extract.ts                 # Mozilla Readability derived extraction
-│   │   ├── overlays.ts                # conservative overlay cleanup
-│   │   ├── pipeline.ts                # Playwright + CDP MHTML orchestration
-│   │   ├── sanitize.ts                # allow-list HTML sanitiser
-│   │   └── url.ts                     # URL normalisation + SSRF guard
-│   ├── cli/
-│   │   └── index.ts                   # CLI: capture, search, list, export, backup, verify, status
-│   ├── db/
-│   │   ├── index.ts                   # open DB, migrations, typed query helpers
-│   │   ├── migrate.ts                 # standalone migration runner
-│   │   └── migrations/
-│   │       ├── 001_initial.sql        # schema: 11 tables, FTS5, triggers
-│   │       ├── 002_constraints.sql    # claim/tag indexes + FTS rebuild
-│   │       ├── 003_application_features.sql # notes/errors/duration + indexes
-│   │       ├── 004_query_indexes.sql        # filtered browsing/history indexes
-│   │       ├── 005_capture_body_metadata.sql # body format metadata + FTS trigger updates
-│   │       └── 006_source_pdfs.sql          # source PDFs, extraction + enrichment state
-│   ├── export/
-│   │   ├── epub.ts                    # EPUB 3 builder (pure Bun ZIP)
-│   │   ├── html.ts                    # HTML export helper
-│   │   ├── markdown.ts                # HTML → Markdown view + ZIP packager
-│   │   ├── render-markdown.ts         # safe generated-Markdown renderer
-│   │   └── pdf.ts                     # Playwright print → PDF
-│   ├── import/
-│   │   ├── archivebox.ts              # read-only ArchiveBox adapter and resumable importer
-│   │   └── archivebox-pdf.ts          # original-PDF classifier and enrichment pass
-│   ├── pdf/                           # source-PDF validation, storage and extraction worker
-│   ├── queue/
-│   │   └── index.ts                   # JobQueue: SQLite-backed in-process poller
-│   ├── config.ts                      # env-driven config with defaults
-│   ├── server.ts                      # HTTP server entry point
-│   └── types.ts                       # shared TypeScript types
-├── tests/
-│   ├── db.test.ts                     # schema, migrations, query helpers
-│   ├── api.test.ts                    # agent search/content API integration tests
-│   ├── archivebox-import.test.ts      # discovery, conversion, fallback, resumption, deduplication
-│   ├── archivebox-pdf.test.ts         # original-PDF enrichment and verification
-│   ├── canonical.test.ts              # MHTML detection, decoding and safe rendering
-│   ├── epub.test.ts                   # EPUB 3 export (structure + spec compliance)
-│   ├── features.test.ts               # delete/paging/Markdown provenance
-│   ├── markdown.test.ts               # Markdown + ZIP export
-│   ├── pdf.test.ts                    # source-PDF capture, extraction and delivery
-│   ├── phase1.test.ts                 # Phase 1 integration pipeline
-│   ├── assets.test.ts                 # link normalisation + tracking pixels
-│   ├── overlays.test.ts               # preserve newsletter article content
-│   ├── queue.test.ts                  # job lifecycle + tag management
-│   ├── sanitize.test.ts               # HTML sanitiser (hostile-input)
-│   ├── upgrade.test.ts                # migration upgrade + backup restore
-│   └── url.test.ts                    # URL normaliser + SSRF guard
-├── docker/
-│   └── entrypoint.sh                  # PUID/PGID drop-privileges + /config/.env sourcing
-├── .dockerignore
-├── .gitignore
-├── Dockerfile                         # oven/bun:1.4.0 + Chromium headless-shell baked in
-├── Makefile                           # build / run / stop / logs / shell / clean
-├── README.md                          # concise project entry point
-├── bun.lock
-├── docker-compose.yml                 # /data + /config volumes, shm_size, healthcheck
-├── package.json
-└── tsconfig.json
-```
+- process images sequentially on the 2 GiB production profile;
+- record peak RSS and elapsed time for a representative oversized fixture;
+- render accepted fallback MHTML through Full page, Article, Markdown and export routes;
+- confirm zero remote resource requests and no scripts, forms or frames;
+- test current Safari, Chromium and Firefox behaviour through decompressed responses;
+- test watchdog exit with `--no-orphans` and confirm Chromium descendants terminate.
 
----
+## Production procedure
 
-## Open decisions
+1. Confirm the queue is idle and record current status.
+2. Create and verify a consistent SQLite backup.
+3. Deploy the immutable v0.3.0 image by digest without running storage migration automatically.
+4. Check health, ordinary capture, oversized fallback and mixed-codec reads.
+5. Stop capture work and run a bounded migration dry run.
+6. Run `migrate storage` sequentially.
+7. Run `verify --all`, API health checks and representative reading/export routes.
+8. Record database, WAL and free-disk sizes. Run `VACUUM` only in a separate approved window if the expected reclaim exceeds its temporary disk requirement.
+9. Keep the previous image digest and verified pre-migration database backup as the rollback pair.
 
-| # | Decision | Status |
-|---|---|---|
-| 1 | HTML storage format: raw UTF-8 vs gzip vs zstd | Wired up (none/gzip via `PACKRAT_HTML_COMPRESSION`); zstd deferred pending Bun native support |
-| 2 | Body deduplication: one body row per content hash or per-capture | ArchiveBox import reuses an existing capture for exact canonical hashes and records `duplicate`; ordinary captures remain one body per row |
-| 3 | Maximum captured-page and per-asset size | Defaults set (20 MB page, 5 MB asset); configurable via env |
-| 4 | Freshness interval before a repeated submission creates a new capture | Implemented; 24h default via `PACKRAT_FRESHNESS_SECONDS`, forced recapture available |
-| 5 | Authenticated captures | Basic authentication required by default; capture-session credential injection remains deferred |
-| 6 | Local archived-link rewriting | Not implemented; no current phase schedules it |
-| 7 | EPUB backend: pure Bun vs external converter | Resolved: pure Bun ZIP, no external tools required |
-| 8 | Service hostname | `packrat` / `packrat.local`; cutover in Phase 5 |
+## Definition of done
+
+- [x] Ordinary captures remain byte-exact before storage compression.
+- [x] Oversized MHTML follows the two fixed image passes and stores only a fitting snapshot.
+- [x] No external or retained oversized original exists.
+- [x] New capture bodies attempt zstd and use it only when smaller.
+- [x] Existing `none`, `gzip` and `zstd` rows remain readable and verifiable.
+- [x] Storage migration is idempotent, hash-checked, sequential and advantageous per row.
+- [x] Type checking and the complete Bun test suite pass.
+- [x] Resource and offline browser checks pass on the production profile.
+- [x] Documentation matches the released CLI, configuration and behaviour.
+- [ ] v0.3.0 is published, deployed by digest, migrated, verified and rollback-tested.
+
+## Completed baseline
+
+v0.2.9 provides canonical Chromium MHTML, byte-exact source PDFs, SQLite FTS5, offline Full page/Article/Markdown views, exports, queue recovery, ArchiveBox migration and original-PDF enrichment. It runs on Bun 1.4.0. ArchiveBox hostname cutover remains separate operational work.

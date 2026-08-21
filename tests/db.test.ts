@@ -24,7 +24,7 @@ describe('schema migrations', () => {
       .get();
     expect(row?.version).toBe(1);
     const latest = db.query<{ version: number }, []>('SELECT MAX(version) version FROM schema_migrations').get();
-    expect(latest?.version).toBe(6);
+    expect(latest?.version).toBe(7);
   });
 
   test('creates all required tables', () => {
@@ -49,6 +49,7 @@ describe('schema migrations', () => {
     expect(tables).toContain('capture_pdfs');
     expect(tables).toContain('pdf_extractions');
     expect(tables).toContain('archivebox_pdf_enrichment');
+    expect(tables).toContain('capture_storage_migrations');
   });
 
   test('creates captures_fts virtual table', () => {

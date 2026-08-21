@@ -48,7 +48,7 @@ ENV HOST=0.0.0.0 \
     PACKRAT_PDF_EXTRACTION_TIMEOUT_MS=60000 \
     PACKRAT_MAX_PDF_PAGES=1000 \
     PACKRAT_MAX_PDF_TEXT_BYTES=10485760 \
-    PACKRAT_HTML_COMPRESSION=none \
+    PACKRAT_HTML_COMPRESSION=auto \
     PACKRAT_MAX_CONCURRENT_CAPTURES=2 \
     PACKRAT_FRESHNESS_SECONDS=86400 \
     PACKRAT_AUTH_USER=packrat \
@@ -60,4 +60,4 @@ EXPOSE 3047
 VOLUME ["/data"]
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["bun", "run", "src/server.ts"]
+CMD ["bun", "--no-orphans", "run", "src/server.ts"]

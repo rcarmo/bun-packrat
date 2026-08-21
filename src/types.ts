@@ -161,8 +161,8 @@ export interface PackratConfig {
   maxPdfTextBytes: number;
   captureTimeoutMs: number;
   maxConcurrentCaptures: number;
-  /** Supported storage compression formats. */
-  htmlCompression: 'none' | 'gzip';
+  /** New-body storage policy. Readers also retain legacy gzip support. */
+  htmlCompression: 'none' | 'auto';
   /** base URL of this service, for self-links */
   baseUrl: string;
   /** Recent successful capture reuse window; 0 disables reuse. */

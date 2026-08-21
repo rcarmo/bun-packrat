@@ -2,9 +2,17 @@ import { parseHTML } from 'linkedom';
 import { extractContent } from './extract.js';
 import { sanitizeHtml } from './sanitize.js';
 
+import type { Compression } from '../types.js';
+
 export type StoredCaptureFormat = 'html' | 'mhtml';
+export type CaptureCompressionPolicy = 'none' | 'auto';
 
 type StoredBody = { html: Uint8Array | null; compression: string };
+
+export interface EncodedCaptureBody {
+  bytes: Buffer;
+  compression: Compression;
+}
 
 type MimePart = {
   contentType: string;
@@ -21,9 +29,26 @@ type ParsedMhtml = {
 
 export function readStoredCaptureBytes(row: StoredBody): Buffer {
   if (!row.html) throw new Error('Capture body is missing');
-  return row.compression === 'gzip'
-    ? Buffer.from(Bun.gunzipSync(Buffer.from(row.html)))
-    : Buffer.from(row.html);
+  const bytes = Buffer.from(row.html);
+  switch (row.compression) {
+    case 'none': return bytes;
+    case 'gzip': return Buffer.from(Bun.gunzipSync(bytes));
+    case 'zstd': return Buffer.from(Bun.zstdDecompressSync(bytes));
+    default: throw new Error(`Unsupported capture compression: ${row.compression}`);
+  }
+}
+
+/** Apply the v0.3.0 per-body storage policy without changing canonical bytes. */
+export async function encodeCanonicalCaptureBytes(
+  canonical: Uint8Array,
+  policy: CaptureCompressionPolicy,
+): Promise<EncodedCaptureBody> {
+  const bytes = Buffer.from(canonical);
+  if (policy === 'none') return { bytes, compression: 'none' };
+  const zstd = Buffer.from(await Bun.zstdCompress(bytes));
+  return zstd.byteLength < bytes.byteLength
+    ? { bytes: zstd, compression: 'zstd' }
+    : { bytes, compression: 'none' };
 }
 
 export function detectStoredCaptureFormat(bytes: Uint8Array): StoredCaptureFormat {
@@ -41,7 +66,7 @@ export function renderStoredCaptureHtml(row: StoredBody): string {
   const bytes = readStoredCaptureBytes(row);
   const html = detectStoredCaptureFormat(bytes) === 'html'
     ? bytes.toString('utf8')
-    : renderMhtmlToHtml(bytes.toString('utf8'));
+    : renderMhtmlToHtml(bytes);
   return removeArchivedOverlays(html);
 }
 
@@ -136,8 +161,10 @@ export function normaliseImportedHtml(raw: string, baseUrl: string): NormalisedI
   return { html, warnings };
 }
 
-export function renderMhtmlToHtml(raw: string): string {
-  const parsed = parseMhtml(raw);
+export function renderMhtmlToHtml(raw: string | Uint8Array): string {
+  // A byte input is viewed through latin1 so raw 7bit/8bit/binary MIME bodies
+  // retain one code unit per byte until their transfer encoding is decoded.
+  const parsed = parseMhtml(typeof raw === 'string' ? raw : Buffer.from(raw).toString('latin1'));
   const resources = buildResourceMap(parsed);
   const { document } = parseHTML(parsed.rootHtml);
 
@@ -395,14 +422,14 @@ function safeExistingDataUrl(value: string): string | null {
 function decodeTransfer(body: string, encoding: string): Buffer {
   if (encoding === 'base64') return Buffer.from(body.replace(/\s+/g, ''), 'base64');
   if (encoding === 'quoted-printable') return decodeQuotedPrintable(body);
-  return Buffer.from(body, 'utf8');
+  return Buffer.from(body, 'latin1');
 }
 
 function decodeQuotedPrintable(value: string): Buffer {
   const source = value.replace(/=\r?\n/g, '');
   const chunks: Buffer[] = [];
   let plain = '';
-  const flush = () => { if (plain) { chunks.push(Buffer.from(plain, 'utf8')); plain = ''; } };
+  const flush = () => { if (plain) { chunks.push(Buffer.from(plain, 'latin1')); plain = ''; } };
   for (let index = 0; index < source.length; index++) {
     if (source[index] === '=' && /^[0-9a-f]{2}$/i.test(source.slice(index + 1, index + 3))) {
       flush();

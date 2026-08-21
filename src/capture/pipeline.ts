@@ -11,7 +11,8 @@ import type { Database } from 'bun:sqlite';
 import type { PackratConfig, CaptureResult } from '../types.js';
 import { normaliseUrl, guardSsrfResolved, UrlValidationError } from './url.js';
 import { extractContent } from './extract.js';
-import { removeArchivedOverlays } from './canonical.js';
+import { encodeCanonicalCaptureBytes, removeArchivedOverlays } from './canonical.js';
+import { fitOversizedMhtml } from './recompress.js';
 import { collectImageSources } from './assets.js';
 import {
   attachSourcePdf,
@@ -37,7 +38,7 @@ export interface PipelineOptions {
   force?: boolean;
 }
 
-const TOOL_VERSION = 'packrat/0.2.9';
+const TOOL_VERSION = 'packrat/0.3.0';
 
 /**
  * Run the full capture pipeline for a URL.
@@ -228,10 +229,9 @@ export async function capturePage(
     );
     await closePlaywrightResource(context, 5_000);
 
-    const canonicalBytes = Buffer.from(snapshot.data, 'utf-8');
-    if (canonicalBytes.byteLength > config.maxPageSizeBytes) {
-      throw new Error(`Captured MHTML exceeds max size (${canonicalBytes.byteLength} > ${config.maxPageSizeBytes} bytes)`);
-    }
+    const fittedSnapshot = await fitOversizedMhtml(Buffer.from(snapshot.data, 'utf-8'), config.maxPageSizeBytes);
+    const canonicalBytes = fittedSnapshot.bytes;
+    if (fittedSnapshot.warning) warnings.push(fittedSnapshot.warning);
 
     // 6. Readability supplies derived metadata and search text. It never
     // replaces the canonical full-page snapshot.
@@ -242,16 +242,11 @@ export async function capturePage(
     const { imageSources, warnings: imageWarnings } = collectImageSources(extracted.articleHtml ?? renderedHtml, finalUrl);
     warnings.push(...imageWarnings);
 
-    // 7. Hash and optionally compress the canonical MHTML bytes.
+    // 7. Hash canonical bytes, then select storage compression by actual size.
     const contentHash = createHash('sha256').update(canonicalBytes).digest('hex');
-    let storedBlob: Buffer = canonicalBytes;
-    let compression: 'none' | 'gzip' = 'none';
-
-    if (config.htmlCompression === 'gzip') {
-      const { gzipSync } = await import('zlib');
-      storedBlob = gzipSync(canonicalBytes);
-      compression = 'gzip';
-    }
+    const encodedBody = await encodeCanonicalCaptureBytes(canonicalBytes, config.htmlCompression);
+    const storedBlob = encodedBody.bytes;
+    const compression = encodedBody.compression;
 
     // 13. Commit the canonical body, metadata, URL pointer and aliases as one
     // transaction so readers never observe a partially completed capture.
@@ -385,35 +380,15 @@ async function storeDirectPdf(
   startedAt: number,
 ): Promise<CaptureResult> {
   const { config, db } = opts;
+  // Each ordinary capture keeps its own URL/timestamp row. attachSourcePdf()
+  // deduplicates the immutable bytes in pdf_blobs by SHA-256.
   const urlRow = getOrCreateUrl(db, normalisedUrl, rawUrl);
-  const existing = db.query<{ id: number }, [string]>(`
-    SELECT cp.capture_id id FROM capture_pdfs cp JOIN pdf_blobs pb ON pb.id=cp.pdf_blob_id
-    WHERE pb.sha256=? ORDER BY cp.capture_id LIMIT 1
-  `).get(downloaded.sha256);
-  if (existing) {
-    addCaptureAlias(db, existing.id, rawUrl, 'original');
-    if (downloaded.finalUrl !== rawUrl) addCaptureAlias(db, existing.id, downloaded.finalUrl, 'redirect');
-    const capture = db.query<{ title: string | null; warnings: string | null }, [number]>(
-      'SELECT title,warnings FROM captures WHERE id=?',
-    ).get(existing.id);
-    const existingMetadata = getCaptureById(db, existing.id);
-    if (existingMetadata && ['pending', 'running'].includes(existingMetadata.source_pdf_extraction_status ?? '')) {
-      await extractStoredPdf(db, existing.id, downloaded.bytes, config);
-    }
-    return {
-      captureId: existing.id, mode: 'pdf', title: capture?.title ?? downloaded.filename,
-      sourceUrl: rawUrl, finalUrl: downloaded.finalUrl, contentHash: downloaded.sha256,
-      htmlSize: 0, pdfSize: downloaded.bytes.byteLength,
-      warnings: capture?.warnings ? JSON.parse(capture.warnings) : [],
-    };
-  }
-
   const captureId = insertCapture(db, {
     url_id: urlRow.id, source_url: rawUrl, final_url: downloaded.finalUrl,
     html: null, compression: 'none', content_hash: downloaded.sha256, html_size: null,
     title: downloaded.filename, author: null, site_name: null, published_at: null,
     excerpt: null, lang: null, extracted_text: downloaded.filename ?? rawUrl,
-    mode: 'pdf', status: 'succeeded', capture_tool: 'packrat/0.2.9', warnings: null,
+    mode: 'pdf', status: 'succeeded', capture_tool: TOOL_VERSION, warnings: null,
   });
   db.transaction(() => {
     attachSourcePdf(db, {

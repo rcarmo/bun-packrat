@@ -55,6 +55,7 @@ export function runMigrations(db: Database): void {
     { version: 4, file: '004_query_indexes.sql' },
     { version: 5, file: '005_capture_body_metadata.sql' },
     { version: 6, file: '006_source_pdfs.sql' },
+    { version: 7, file: '007_storage_migration_state.sql' },
   ];
 
   for (const { version, file } of migrations) {

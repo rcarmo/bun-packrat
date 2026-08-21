@@ -53,7 +53,7 @@ Verification runs SQLite's integrity check and recomputes SHA-256 hashes from un
 
 ## ArchiveBox migration rehearsal
 
-Keep ArchiveBox stopped or otherwise quiescent, and mount its data root read-only. A container rehearsal can use:
+Keep ArchiveBox stopped or otherwise quiescent, and mount its data root read-only. The deployed v0.2.9 command uses gzip explicitly; v0.3.0 uses `PACKRAT_HTML_COMPRESSION=auto`. A v0.2.9 container rehearsal can use:
 
 ```bash
 docker run --rm --network none \
@@ -81,11 +81,33 @@ After reconciliation:
 6. test representative SingleFile, rendered-HTML, metadata-only and source-PDF records;
 7. keep ArchiveBox read-only until hostname cutover and rollback validation are complete.
 
+## Capture-body compression migration
+
+v0.3.0 reads `none`, `gzip` and `zstd` capture bodies. New bodies use zstd only when it is smaller than canonical bytes. Existing rows can be evaluated and migrated with:
+
+```bash
+bun run src/cli/index.ts migrate storage --dry-run
+bun run src/cli/index.ts migrate storage
+```
+
+The production procedure is:
+
+1. stop capture submissions and wait for an idle queue;
+2. create a consistent backup and run `verify --all` against it;
+3. run a bounded dry run with `--limit N` when rehearsing;
+4. run the migration sequentially;
+5. run `verify --all` against the migrated database;
+6. inspect database, WAL and free-disk sizes before considering `VACUUM`.
+
+For each row, the command decompresses the current body, verifies its existing canonical SHA-256 and creates a zstd candidate. One short transaction updates an advantageous BLOB when needed and records a durable `changed`, `retained` or `failed` outcome. Bounded reruns skip recorded outcomes and advance to pending rows. Rows for which gzip or uncompressed bytes are smaller remain unchanged.
+
+The migration does not run `VACUUM`. Rewriting BLOBs can place old pages on SQLite's freelist without shrinking the database file. A separate `VACUUM` needs temporary free space comparable to the database and must use its own approved maintenance window.
+
 ## Queue recovery
 
 The queue records jobs and attempts in SQLite. On startup, Packrat first marks abandoned `pending` capture rows as failed with `Capture interrupted by process restart`. It then requeues abandoned `running` jobs that have attempts remaining. Exhausted jobs become `failed`; capture jobs have a three-attempt ceiling.
 
-DNS resolution, browser operations and PDF extraction have explicit time bounds. A capture watchdog exits the process with status 70 when a capture remains unresolved for the larger of five minutes or four times `PACKRAT_CAPTURE_TIMEOUT_MS`. The service manager restarts Packrat, and startup recovery applies the rules above. This prevents a lost Chromium protocol promise from occupying a worker indefinitely.
+DNS resolution, browser operations and PDF extraction have explicit time bounds. A capture watchdog exits the process with status 70 when a capture remains unresolved for the larger of five minutes or four times `PACKRAT_CAPTURE_TIMEOUT_MS`. Production starts Bun with `--no-orphans`, which kills descendant Chromium processes when Packrat exits. The service manager restarts Packrat, and startup recovery applies the rules above.
 
 Inspect a job through the API:
 
@@ -135,7 +157,7 @@ Packrat does not bypass authentication, paywalls, CAPTCHAs or anti-bot controls.
 
 ## Capacity limits
 
-The default maximum canonical page size is 20 MB. Legacy asset inlining limits each asset to 5 MB. Direct source PDFs are limited to 100 MB; PDF.js extraction is limited to 60 seconds, 1,000 pages and 10 MB of UTF-8 text. Change these values through the corresponding `PACKRAT_*` environment variables after checking available memory and database growth.
+The default maximum accepted uncompressed MHTML size is 20 MiB. Only snapshots above this threshold invoke image recompression. Packrat processes JPEG, PNG and WebP parts sequentially and retains an encoded part only when it is smaller. Legacy asset inlining limits each asset to 5 MB. Direct source PDFs are limited to 100 MB; PDF.js extraction is limited to 60 seconds, 1,000 pages and 10 MB of UTF-8 text. Change these values through the corresponding `PACKRAT_*` environment variables after checking available memory and database growth.
 
 The rendered Markdown reader caches at most 32 MiB of decoded archived image assets in process memory. The cache is not persistent and does not change canonical bytes.
 

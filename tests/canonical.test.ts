@@ -76,6 +76,34 @@ describe('canonical capture formats', () => {
     expect(html).not.toMatch(/url\(["']?https?:/i);
   });
 
+  test('preserves raw binary image bytes while rendering stored MHTML', () => {
+    const marker = Buffer.from([0x00, 0x80, 0x81, 0xfe, 0xff]);
+    const raw = Buffer.from([
+      'From: <Saved by Blink>',
+      'Snapshot-Content-Location: https://example.com/raw',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/related; boundary="raw-boundary"',
+      '',
+      '--raw-boundary',
+      'Content-Type: text/html',
+      'Content-Location: https://example.com/raw',
+      '',
+      '<html><body><img src="raw.png"></body></html>',
+      '--raw-boundary',
+      'Content-Type: image/png',
+      'Content-Transfer-Encoding: binary',
+      'Content-Location: https://example.com/raw.png',
+      '',
+      marker.toString('latin1'),
+      '--raw-boundary--',
+      '',
+    ].join('\r\n'), 'latin1');
+    const html = renderStoredCaptureHtml({ html: raw, compression: 'none' });
+    const encoded = html.match(/data:image\/png;base64,([^"']+)/)?.[1];
+    expect(encoded).toBeTruthy();
+    expect(Buffer.from(encoded!, 'base64')).toEqual(marker);
+  });
+
   test('supports LF-only MHTML and gzip storage', () => {
     const raw = Buffer.from(fixture('\n'));
     const compressed = Bun.gzipSync(raw);

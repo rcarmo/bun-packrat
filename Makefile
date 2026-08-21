@@ -15,7 +15,7 @@ build-clean:
 ## Start the service in the background
 run:
 	mkdir -p data config
-	$(COMPOSE) up -d
+	$(COMPOSE) up -d --remove-orphans
 
 ## Stop the service
 stop:

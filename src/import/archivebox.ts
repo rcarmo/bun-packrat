@@ -2,15 +2,14 @@ import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { gzipSync } from 'node:zlib';
 import { normaliseUrl } from '../capture/url.js';
 import { extractContent } from '../capture/extract.js';
-import { normaliseImportedHtml } from '../capture/canonical.js';
+import { encodeCanonicalCaptureBytes, normaliseImportedHtml, type CaptureCompressionPolicy } from '../capture/canonical.js';
 import { addCaptureAlias, addTagToCapture, getOrCreateUrl, insertCapture, updateLatestCapture } from '../db/index.js';
 import type { Compression } from '../types.js';
 
 const ADAPTER = 'archivebox-django-core-v1';
-const TOOL = 'packrat/archivebox-import-0.1.0';
+const TOOL = 'packrat/archivebox-import-0.2.0';
 const REQUIRED_SCHEMA: Record<string, string[]> = {
   core_snapshot: ['id', 'url', 'timestamp', 'title', 'bookmarked_at', 'downloaded_at'],
   core_archiveresult: ['snapshot_id', 'extractor', 'status', 'output'],
@@ -51,7 +50,7 @@ export interface ArchiveBoxImportOptions {
   verifyOnly?: boolean;
   retryFailed?: boolean;
   limit?: number;
-  compression?: 'none' | 'gzip';
+  compression?: CaptureCompressionPolicy;
   maxCandidateBytes?: number;
   reportJson?: string;
   reportHtml?: string;
@@ -162,16 +161,21 @@ export async function importArchiveBox(target: Database, options: ArchiveBoxImpo
     assertSourceRowsMatch(target, snapshots);
 
     const report = baseReport(inventory, plan, false, false);
-    const selected = options.limit && options.limit > 0 ? snapshots.slice(0, options.limit) : snapshots;
-    for (const row of selected) {
+    const eligible = snapshots.filter((row) => {
+      const existing = target.query<{ outcome: string | null }, [string]>('SELECT outcome FROM archivebox_imports WHERE ab_id=?').get(row.id);
+      return !existing?.outcome || (options.retryFailed && existing.outcome === 'failed');
+    });
+    report.resumed = snapshots.length - eligible.length;
+    for (const row of snapshots) {
       const existing = target.query<{ outcome: string | null }, [string]>('SELECT outcome FROM archivebox_imports WHERE ab_id=?').get(row.id);
       if (existing?.outcome && !(options.retryFailed && existing.outcome === 'failed')) {
-        report.resumed++;
         report.outcomes[existing.outcome] = (report.outcomes[existing.outcome] ?? 0) + 1;
-        continue;
       }
+    }
+    const selected = options.limit && options.limit > 0 ? eligible.slice(0, options.limit) : eligible;
+    for (const row of selected) {
       try {
-        const item = prepareItem(source, row, archiveRoot, options.compression ?? 'none', options.maxCandidateBytes ?? DEFAULT_MAX_IMPORT_BYTES);
+        const item = await prepareItem(source, row, archiveRoot, options.compression ?? 'auto', options.maxCandidateBytes ?? DEFAULT_MAX_IMPORT_BYTES);
         storeItem(target, item);
         report.processed++;
         const outcome = target.query<{ outcome: string }, [string]>('SELECT outcome FROM archivebox_imports WHERE ab_id=?').get(row.id)?.outcome ?? 'failed';
@@ -185,14 +189,14 @@ export async function importArchiveBox(target: Database, options: ArchiveBoxImpo
       }
     }
     reconcile(target, report);
-    report.ok = report.reconciliation.pending === (snapshots.length - selected.length) && (report.outcomes.failed ?? 0) === 0;
+    report.ok = report.reconciliation.pending === Math.max(0, eligible.length - selected.length) && (report.outcomes.failed ?? 0) === 0;
     return finishReport(report, target, options, started);
   } finally {
     source.close();
   }
 }
 
-function prepareItem(sourceDb: Database, source: SourceSnapshot, archiveRoot: string, compression: 'none' | 'gzip', maxCandidateBytes: number): PreparedItem {
+async function prepareItem(sourceDb: Database, source: SourceSnapshot, archiveRoot: string, compression: CaptureCompressionPolicy, maxCandidateBytes: number): Promise<PreparedItem> {
   const directory = join(archiveRoot, source.timestamp);
   const paths: Record<string, { path: string; bytes: number }> = {};
   for (const name of CANDIDATES) {
@@ -224,10 +228,10 @@ function prepareItem(sourceDb: Database, source: SourceSnapshot, archiveRoot: st
       const contentHash = createHash('sha256').update(canonical).digest('hex');
       const metadata = extractContent(normalised.html, source.url);
       warnings.push(...metadata.extractionWarnings);
-      const body = compression === 'gzip' ? gzipSync(canonical) : canonical;
+      const encodedBody = await encodeCanonicalCaptureBytes(canonical, compression);
       return {
-        source, paths, sourceStatus, sourceHash, tags, body,
-        compression, contentHash, htmlSize: canonical.length,
+        source, paths, sourceStatus, sourceHash, tags, body: encodedBody.bytes,
+        compression: encodedBody.compression, contentHash, htmlSize: canonical.length,
         mode: candidate === 'singlefile.html' ? 'imported_singlefile' : 'full_page',
         metadata, warnings,
       };

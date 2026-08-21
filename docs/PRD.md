@@ -1,14 +1,14 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-18T20:00:00Z
+updated: 2026-08-21T08:30:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
 
 # Single-File Web Archive PRD
 
-A Bun service replaces ArchiveBox with a searchable archive whose only persistent application store is SQLite. Web captures store Chromium's complete rendered page and loaded resources as canonical MHTML. Direct PDF responses are preserved byte-for-byte in deduplicated BLOBs and extracted with bounded PDF.js workers.
+A Bun service replaces ArchiveBox with a searchable archive whose only persistent application store is SQLite. Web captures store Chromium's complete rendered page and loaded resources as canonical MHTML. Oversized MHTML may use a fixed, bounded image-recompression fallback before storage. Direct PDF responses are preserved byte-for-byte in deduplicated BLOBs and extracted with bounded PDF.js workers.
 
 ## Problem
 
@@ -47,8 +47,8 @@ The initial deployment has one trusted user on the local network.
 2. The service normalises the URL and checks for a recent matching capture.
 3. A worker first uses the bounded direct-download path for a PDF-looking URL. For other URLs it opens the page in Chromium through Playwright.
 4. The browser pipeline requires the primary document to reach `DOMContentLoaded`, then applies the configurable stricter readiness condition as a bounded best-effort settling signal. It dismisses known overlays, scrolls lazy content into view and records the final URL. An extensionless `application/pdf` response switches to the direct-download path after signature validation.
-5. Chromium serialises a web page's rendered DOM and loaded resources as MHTML. A direct PDF is stored byte-for-byte. The service records the source in SQLite and extracts search text as derived data.
-6. The capture becomes available at a stable local URL.
+5. Chromium serialises a web page's rendered DOM and loaded resources as MHTML. Packrat stores snapshots within the configured limit unchanged. For oversized MHTML, it tries colour WebP quality 75 for eligible raster MIME parts, then greyscale WebP quality 75 if required. It stores the first rebuilt MHTML that fits and discards all oversized candidates. A direct PDF is stored byte-for-byte.
+6. Packrat hashes the accepted uncompressed canonical bytes, attempts zstd storage compression and uses zstd only when its BLOB is smaller. The capture becomes available at a stable local URL.
 
 ### Read on iOS
 
@@ -97,13 +97,13 @@ Rendered Markdown and decoded archived image assets are derived on demand. A bou
 
 ### Canonical capture format
 
-Every successful fresh web capture stores Chromium MHTML as UTF-8 text or a compressed SQLite BLOB. The MHTML is the source of record and contains the complete rendered DOM plus every resource loaded into the snapshot by Chromium. Packrat does not replace it with Readability output. Direct PDFs use the separate byte-exact source-PDF storage contract.
+Every successful fresh web capture stores accepted Chromium MHTML as UTF-8 bytes or a compressed SQLite BLOB. MHTML at or below `PACKRAT_MAX_PAGE_BYTES` remains byte-exact. Oversized MHTML may replace embedded JPEG, PNG and WebP MIME parts with smaller WebP encodings through the fixed fallback below. The accepted MHTML is the source of record. Packrat does not retain the oversized original or replace it with Readability output. Direct PDFs use the separate byte-exact source-PDF storage contract.
 
 The canonical BLOB records:
 
 - the complete rendered document body and page chrome after bounded overlay dismissal;
 - Chromium's captured stylesheets;
-- images, fonts and other loaded resources included by `Page.captureSnapshot`;
+- images, fonts and other loaded resources included by `Page.captureSnapshot`, subject only to the documented oversized-image fallback;
 - original and final URL provenance in MIME headers and capture metadata;
 - a reproducible hash over the uncompressed MHTML;
 - the capture-tool version.
@@ -120,6 +120,19 @@ The canonical MHTML is not served as HTML. The raw archive route downloads it as
 Derived HTML preserves author CSS when all resource URLs resolve to safe captured `data:` URLs. Links to other pages remain ordinary absolute HTTP or HTTPS links. Opening a derived full-page capture must not cause external requests.
 
 Existing legacy HTML captures remain readable through content sniffing until they are recaptured or imported.
+
+#### Oversized MHTML image fallback
+
+The fallback runs only when the uncompressed Chromium MHTML exceeds `PACKRAT_MAX_PAGE_BYTES`.
+
+1. Re-encode embedded JPEG, PNG and WebP MIME parts as WebP quality 75.
+2. Process images sequentially and replace each MIME part only when the encoded bytes are smaller.
+3. Rebuild the MHTML and accept it when its uncompressed byte length is within the configured limit.
+4. If the colour candidate remains oversized, repeat with greyscale WebP quality 75.
+5. Store the first candidate that fits and record whether colour or greyscale recompression was used.
+6. If neither candidate fits, fail through the normal capture failure path.
+
+SVG, GIF and non-image MIME parts are unchanged. Packrat discards the oversized original and rejected candidates. It does not store external objects, an article substitute or multiple snapshot variants.
 
 ### Page extraction and derived views
 
@@ -174,9 +187,10 @@ Use WAL mode during normal operation. Backups must use SQLite's online backup AP
 | `capture_pdfs` | Capture association and original-response provenance |
 | `pdf_extractions` | Bounded PDF.js status, text and warnings |
 | `archivebox_pdf_enrichment` | Independent resumable outcome for each ArchiveBox row |
+| `capture_storage_migrations` | Durable changed, retained or failed outcome for each capture-body storage migration |
 | `schema_migrations` | Applied database migrations |
 
-Capture rows record the compression algorithm and SHA-256 of the uncompressed canonical bytes. `PACKRAT_HTML_COMPRESSION` supports `none` and `gzip`; `none` is the default. Source PDFs retain their exact bytes in content-addressed BLOB rows.
+Capture rows record the compression algorithm and SHA-256 of the uncompressed canonical bytes. Packrat attempts native zstd compression for every accepted web or imported HTML body and stores zstd only when it is smaller than the canonical bytes. Readers permanently support `none`, `gzip` and `zstd` for mixed existing data. `html_size`, page-size checks and `content_hash` always refer to uncompressed canonical bytes. Source PDFs retain their exact bytes in content-addressed BLOB rows.
 
 ### Search and browsing
 
@@ -259,6 +273,7 @@ delete <capture-id> --confirm
 verify [--all] [--id N]
 backup <destination.sqlite>
 migrate
+migrate storage [--dry-run] [--limit N]
 status
 ```
 
@@ -414,7 +429,7 @@ PDF.js runs in an isolated worker with defaults of 100 MiB per PDF, 60 seconds, 
 
 ## Runtime and dependencies
 
-- Runtime: current stable Bun.
+- Runtime: Bun 1.4.x.
 - HTTP server and CLI: Bun APIs or a small Bun-compatible framework.
 - Database: `bun:sqlite` with FTS5.
 - Browser capture: Playwright with persistent browser binaries outside temporary storage.
@@ -442,7 +457,7 @@ PDF.js runs in an isolated worker with defaults of 100 MiB per PDF, 60 seconds, 
 - Startup recovery marks abandoned pending capture rows as failed, requeues running jobs with attempts remaining and fails exhausted jobs.
 - Capture jobs have a three-attempt ceiling.
 - DNS, browser operations and PDF extraction use bounded waits.
-- A process watchdog exits with status 70 when a capture exceeds the larger of five minutes or four times the configured capture timeout; service restart invokes normal recovery.
+- A process watchdog exits with status 70 when a capture exceeds the larger of five minutes or four times the configured capture timeout; Bun's `--no-orphans` process mode terminates descendant Chromium processes before service restart invokes normal recovery.
 - Duplicate submissions use idempotency keys or normalised URL checks.
 - Capture deletion requires explicit confirmation and uses one transaction.
 - Database writes use transactions and foreign-key enforcement.
@@ -462,7 +477,7 @@ These original design targets are not automated release gates:
 - Import resumption: no more than one bounded batch needs reprocessing after forced termination.
 - Export: typical Markdown or EPUB output starts within 15 seconds.
 
-Large pages may exceed these targets but must fail with explicit configured limits rather than exhausting host memory or disk.
+Large pages may exceed these targets. The oversized-image fallback processes raster parts sequentially and must fail with explicit configured limits rather than exhausting host memory or disk.
 
 ## Acceptance criteria
 
@@ -473,6 +488,10 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [x] Opening the archived page causes no unapproved network requests.
 - [x] The source URL, final URL and capture time are visible.
 - [x] Search finds the page by title, domain and body text.
+- [x] MHTML within the page limit remains byte-exact before storage compression.
+- [x] Oversized MHTML tries colour WebP quality 75, then greyscale WebP quality 75, and replaces only smaller raster parts.
+- [x] Only the first rebuilt MHTML that fits is stored; rejected and original oversized bytes are discarded.
+- [x] A page that remains oversized after both passes fails without storing a body.
 
 ### Storage and recovery
 
@@ -480,6 +499,9 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - [x] No persistent asset, queue, search or export directory is required.
 - [x] Integrity and content-hash checks pass after restore.
 - [x] Forced termination during capture or import leaves the database consistent.
+- [x] New bodies attempt zstd and store it only when its BLOB is smaller than canonical bytes.
+- [x] Existing `none`, `gzip` and `zstd` bodies remain readable and verifiable.
+- [x] The storage migration verifies each canonical hash, changes a row only when zstd is smaller than its current BLOB, and records a durable per-row outcome.
 
 ### ArchiveBox import
 
@@ -561,7 +583,16 @@ Large pages may exceed these targets but must fail with explicit configured limi
 - Add on-demand Playwright PDF generation.
 - Validate EPUB structure and run `epubcheck` when installed; Apple Books device validation remains an operational check.
 
-### Phase 5 — cutover 🔜
+### Phase 5 — bounded oversized capture and advantageous compression ✅
+
+- [x] Add the two-pass `Bun.Image` MHTML fallback.
+- [x] Add mixed `none`/`gzip`/`zstd` body decoding and verification.
+- [x] Attempt zstd for every accepted body and store it only when smaller.
+- [x] Add the resumable, hash-checked, advantageous storage migration.
+- [x] Validate resource use and offline rendering on the production profile.
+- [ ] Validate migration and rollback during the production deployment.
+
+### Phase 6 — cutover 🔜
 
 - [x] Freeze ArchiveBox writes (VM stopped as of 2026-08-10).
 - [x] Run the import, original-PDF enrichment and reconciliation.
@@ -571,14 +602,14 @@ Large pages may exceed these targets but must fail with explicit configured limi
 
 ## Open decisions
 
-1. Whether to store HTML as raw UTF-8, gzip or zstd BLOBs — wired via `PACKRAT_HTML_COMPRESSION`; zstd deferred pending Bun native support.
+1. HTML storage format — resolved for v0.3.0: attempt zstd for every accepted body, store it only when smaller, and permanently read mixed `none`, `gzip` and `zstd` rows.
 2. Whether exact duplicate documents share one body row — resolved for imports: exact canonical hashes reuse an existing capture and retain separate provenance outcomes; ordinary captures retain one body per row.
-3. The maximum allowed captured-page size and per-asset size — defaults set (20 MB / 5 MB), configurable.
+3. The maximum allowed captured-page size and per-asset size — defaults set (20 MiB / 5 MiB), configurable.
 4. The freshness interval before a repeated URL submission creates a new capture — resolved: 24 hours by default, configurable via `PACKRAT_FRESHNESS_SECONDS`, with forced recapture.
 5. Whether authenticated captures are required in the first release — resolved for service access: HTTP Basic authentication is required by default. Packrat does not inject credentials into protected-site capture sessions.
 6. Whether local archived-link rewriting should be enabled by default — deferred.
 7. Whether EPUB generation uses a Bun-native writer or an external converter — resolved: pure Bun ZIP, no external tools.
-8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 5.
+8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 6.
 
 ## References
 

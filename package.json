@@ -1,12 +1,12 @@
 {
   "name": "bun-packrat",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "SQLite-backed web archive with canonical MHTML and byte-exact source PDF capture",
   "private": true,
   "type": "module",
   "main": "src/server.ts",
   "scripts": {
-    "start": "bun run src/server.ts",
+    "start": "bun --no-orphans run src/server.ts",
     "cli": "bun run src/cli/index.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",

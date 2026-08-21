@@ -55,14 +55,14 @@ describe('ArchiveBox importer', () => {
 
   test('imports offline SingleFile, preserves metadata rows and resumes terminal outcomes', async () => {
     const data = sourceFixture();
-    const first = await importArchiveBox(target, { dataRoot: data, compression: 'gzip' });
+    const first = await importArchiveBox(target, { dataRoot: data, compression: 'auto' });
     expect(first.ok).toBe(true);
     expect(first.reconciliation).toEqual({ terminal: 3, pending: 0, total: 3 });
     expect(first.outcomes.imported).toBe(3);
     const rows = target.query<any, []>('SELECT * FROM captures ORDER BY id').all();
     expect(rows).toHaveLength(3);
     expect(rows[0].mode).toBe('imported_singlefile');
-    expect(rows[0].compression).toBe('gzip');
+    expect(rows[0].compression).toBe('zstd');
     expect(rows[1].mode).toBe('metadata_only');
     expect(rows[2].mode).toBe('metadata_only');
     expect(rows[0].captured_at).toBe('2023-11-14T22:13:21Z');
@@ -76,7 +76,7 @@ describe('ArchiveBox importer', () => {
     expect(rendered).not.toContain('remote.invalid');
     expect(rendered).not.toContain('tracker.invalid');
 
-    const second = await importArchiveBox(target, { dataRoot: data, compression: 'gzip' });
+    const second = await importArchiveBox(target, { dataRoot: data, compression: 'auto' });
     expect(second.processed).toBe(0);
     expect(second.resumed).toBe(3);
     expect(target.query<{ n:number },[]>('SELECT count(*) n FROM captures').get()?.n).toBe(3);
@@ -89,6 +89,22 @@ describe('ArchiveBox importer', () => {
     expect(emptyVerification.reconciliation).toEqual({ terminal: 0, pending: 3, total: 3 });
     expect(emptyVerification.failures).toHaveLength(3);
     emptyTarget.close();
+  });
+
+  test('repeated limited imports advance beyond terminal rows', async () => {
+    const data = sourceFixture();
+    const first = await importArchiveBox(target, { dataRoot: data, limit: 1 });
+    const second = await importArchiveBox(target, { dataRoot: data, limit: 1 });
+    const third = await importArchiveBox(target, { dataRoot: data, limit: 1 });
+    const done = await importArchiveBox(target, { dataRoot: data, limit: 1 });
+    expect(first.processed).toBe(1);
+    expect(first.reconciliation.pending).toBe(2);
+    expect(second.processed).toBe(1);
+    expect(second.reconciliation.pending).toBe(1);
+    expect(third.processed).toBe(1);
+    expect(third.reconciliation.pending).toBe(0);
+    expect(done.processed).toBe(0);
+    expect(done.resumed).toBe(3);
   });
 
   test('falls back from an oversized SingleFile candidate to bounded rendered HTML', async () => {

@@ -22,7 +22,7 @@ services:
       # Tuning — override as needed
       PACKRAT_CAPTURE_TIMEOUT_MS: "60000"
       PACKRAT_MAX_CONCURRENT_CAPTURES: "2"
-      PACKRAT_HTML_COMPRESSION: "none"   # none | gzip
+      PACKRAT_HTML_COMPRESSION: "auto"   # none | auto
       PACKRAT_MAX_PAGE_BYTES: "20971520" # 20 MB
       PACKRAT_MAX_ASSET_BYTES: "5242880" # 5 MB
       PACKRAT_FRESHNESS_SECONDS: "86400"  # reuse a successful capture for 24h

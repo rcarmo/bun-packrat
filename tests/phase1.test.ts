@@ -5,6 +5,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { join } from 'node:path';
 import { openDatabase, runMigrations, getCaptureById, getCaptureHtml, searchCaptures } from '../src/db/index.js';
 import { extractContent, recoverSemanticArticleImages } from '../src/capture/extract.js';
 import { sanitizeHtml } from '../src/capture/sanitize.js';
@@ -65,6 +66,33 @@ describe('direct PDF URL hints', () => {
     expect(hasPdfUrlHint('https://example.com/report.PDF?download=1')).toBe(true);
     expect(hasPdfUrlHint('https://example.com/download?file=report.pdf')).toBe(true);
     expect(hasPdfUrlHint('https://example.com/article?format=pdf')).toBe(false);
+  });
+});
+
+describe('Bun descendant cleanup', () => {
+  test('--no-orphans terminates descendants when the parent exits', async () => {
+    const processUnderTest = Bun.spawn([
+      process.execPath,
+      '--no-orphans',
+      join(import.meta.dir, 'no-orphans-child.ts'),
+    ], { stdout: 'pipe', stderr: 'pipe' });
+    const reader = processUnderTest.stdout.getReader();
+    let output = '';
+    let descendantPid = 0;
+    const deadline = Date.now() + 5_000;
+    while (!descendantPid && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      output += new TextDecoder().decode(value);
+      descendantPid = Number(output.trim().split(/\s+/)[0]) || 0;
+    }
+    expect(descendantPid).toBeGreaterThan(0);
+    processUnderTest.kill('SIGTERM');
+    await processUnderTest.exited;
+    await Bun.sleep(100);
+    const alive = Bun.spawnSync(['sh', '-c', `kill -0 ${descendantPid} 2>/dev/null`]).exitCode === 0;
+    if (alive) Bun.spawnSync(['kill', '-KILL', String(descendantPid)]);
+    expect(alive).toBe(false);
   });
 });
 
