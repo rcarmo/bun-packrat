@@ -49,7 +49,7 @@ beforeAll(async () => {
 
   const port = 35_000 + Math.floor(Math.random() * 10_000);
   base = `http://127.0.0.1:${port}`;
-  server = Bun.spawn(['bun', 'run', 'src/server.ts'], {
+  server = Bun.spawn([process.execPath, '--no-orphans', 'run', 'src/server.ts'], {
     cwd: join(import.meta.dir, '..'),
     env: {
       ...process.env,

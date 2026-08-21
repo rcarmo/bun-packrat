@@ -1,5 +1,7 @@
 # HTTP API
 
+This reference describes the v0.3.0 HTTP API.
+
 The HTTP API uses the same Basic authentication policy as the web UI. Read-only routes accept authenticated cross-origin clients. Browser-originated mutations must be same-origin; command-line clients without browser origin headers are accepted.
 
 ## Capture jobs
@@ -107,7 +109,7 @@ The `confirm` value must be the capture ID as a string or the JSON value `true`.
 | `GET|HEAD /captures/:id/source.pdf` | Inline byte-exact source PDF with single-byte `Range` support. Add `?download=1` for attachment disposition. |
 | `GET|HEAD /captures/:id/source.txt` | Extracted source-PDF text. Encrypted, timed-out or failed extraction returns `409`; verified image-only PDFs return empty text. |
 
-Capture rows show the source domain, capture date, canonical body size and author or site when available. Storage mode appears only for exceptional records such as metadata-only, imported or legacy article captures. Asset counts are not computed while rendering the list.
+Capture rows show the source domain, capture date, uncompressed canonical body size and author or site when available. Storage mode appears only for exceptional records such as metadata-only, imported or legacy article captures. A capture warning reports when the oversized colour or greyscale image fallback produced the stored MHTML. Storage compression remains internal and has no effect on response formats. Asset counts are not computed while rendering the list.
 
 The web filter form omits capture mode because it is an internal representation detail. The `mode` query parameter remains available through `GET /api/captures` for automation and diagnostics.
 
@@ -123,7 +125,7 @@ GET /api/captures/:id/content/:format
 
 | Format | Content type | Result |
 |---|---|---|
-| `mhtml` | `multipart/related` | Canonical Chromium MHTML. Legacy HTML records return `409 Conflict`. |
+| `mhtml` | `multipart/related` | Chromium MHTML accepted after any documented oversized-image fallback. Legacy HTML records return `409 Conflict`. |
 | `html` | `text/html` | Safe standalone full-page HTML. |
 | `article-html` | `text/html` | Simplified offline article HTML. |
 | `markdown` | `text/markdown` | Article Markdown with original HTTP or HTTPS image URLs. This agent-facing response does not use the browser reader's archived-image routes. |
@@ -143,7 +145,7 @@ X-Packrat-Source-Url
 X-Packrat-Final-Url
 ```
 
-Responses use `Cache-Control: no-store`. The route pattern rejects unknown formats with `404`. Missing or unsuccessful captures also return `404`.
+Responses use `Cache-Control: no-store`. Packrat decompresses `none`, `gzip` or `zstd` BLOBs before producing any content response; clients and browsers never need codec support. The route pattern rejects unknown formats with `404`. Missing or unsuccessful captures also return `404`.
 
 ## Download routes
 

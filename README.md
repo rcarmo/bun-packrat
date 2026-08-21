@@ -39,14 +39,21 @@ For an unauthenticated service on a trusted network, set `PACKRAT_AUTH_DISABLED=
 bun install
 bun run typecheck
 bun test
-PACKRAT_AUTH_DISABLED=1 bun run src/server.ts
+PACKRAT_AUTH_DISABLED=1 bun run start
 ```
 
 The default database path is `./data/packrat.db`.
 
 ## Project status
 
-Fresh web/PDF capture, search, offline reading, export, deletion, backup, verification, queue recovery, ArchiveBox import and original-PDF enrichment are implemented and tested in `v0.2.7`. ArchiveBox hostname cutover and retirement checks remain operational work.
+Packrat v0.3.0 runs on Bun 1.4 and includes fresh web/PDF capture, search, offline reading, export, deletion, backup, verification, queue recovery, ArchiveBox import and original-PDF enrichment. It also:
+
+- recompresses embedded JPEG, PNG and WebP MIME parts when MHTML exceeds 20 MiB;
+- tries colour WebP quality 75, then greyscale WebP quality 75;
+- attempts zstd for every accepted web or imported HTML body and stores it only when smaller;
+- migrates existing bodies only when verified zstd output is smaller.
+
+See the [v0.3.0 implementation plan](docs/PLAN.md). ArchiveBox hostname cutover and retirement checks are separate operational work.
 
 See the [documentation index](docs/README.md) for setup, configuration, architecture, API, CLI and operations. Requirements and delivery status are tracked in the [product requirements](docs/PRD.md) and [implementation plan](docs/PLAN.md).
 

@@ -11,13 +11,13 @@ Packrat reads configuration from environment variables when the process starts. 
 | `PLAYWRIGHT_BROWSERS_PATH` | `/workspace/bin/pw-browsers` | Playwright browser directory. Docker sets `/browsers`. |
 | `PACKRAT_CAPTURE_TIMEOUT_MS` | `60000` | Browser navigation and operation timeout in milliseconds. |
 | `PACKRAT_MAX_CONCURRENT_CAPTURES` | `2` | Parallel capture workers, from 1 to 16. |
-| `PACKRAT_MAX_PAGE_BYTES` | `20971520` | Maximum canonical page size: 20 MB. |
+| `PACKRAT_MAX_PAGE_BYTES` | `20971520` | Maximum accepted uncompressed MHTML size: 20 MiB. Larger snapshots trigger the fixed image fallback. |
 | `PACKRAT_MAX_ASSET_BYTES` | `5242880` | Maximum asset size for the legacy HTML inliner: 5 MB. |
 | `PACKRAT_MAX_PDF_BYTES` | `104857600` | Maximum direct source-PDF download: 100 MB. |
 | `PACKRAT_PDF_EXTRACTION_TIMEOUT_MS` | `60000` | PDF.js extraction worker timeout in milliseconds. |
 | `PACKRAT_MAX_PDF_PAGES` | `1000` | Maximum pages processed during PDF text extraction. |
 | `PACKRAT_MAX_PDF_TEXT_BYTES` | `10485760` | Maximum extracted PDF text retained: 10 MB of UTF-8. |
-| `PACKRAT_HTML_COMPRESSION` | `none` | Stored body compression: `none` or `gzip`. |
+| `PACKRAT_HTML_COMPRESSION` | `auto` | Attempt zstd and store it only when smaller. Readers support existing `none`, `gzip` and `zstd` rows. |
 | `PACKRAT_FRESHNESS_SECONDS` | `86400` | Reuse interval for a successful capture. `0` disables reuse. |
 | `PACKRAT_CAPTURE_WAIT_UNTIL` | `networkidle` | Best-effort readiness state: `load`, `domcontentloaded`, `networkidle` or `commit`. |
 | `PACKRAT_CAPTURE_SETTLING_MS` | `1000` | Delay after readiness and before scrolling, from 0 to 60000 ms. |
@@ -43,6 +43,17 @@ Browser-originated mutations must be same-origin. Requests from command-line cli
 
 When the primary response is a PDF, Packrat stores its byte-exact content after applying `PACKRAT_MAX_PDF_BYTES`. PDF.js extraction runs in an isolated worker and applies the extraction timeout, page and text limits independently. A valid PDF remains stored if extraction times out, is encrypted, is image-only or otherwise fails.
 
-## Compression
+## Oversized MHTML
 
-`PACKRAT_HTML_COMPRESSION=gzip` compresses stored bodies. The `content_hash` remains the SHA-256 hash of the uncompressed canonical bytes.
+Packrat compares `PACKRAT_MAX_PAGE_BYTES` with the uncompressed Chromium MHTML. Snapshots within the limit keep their image bytes unchanged. An oversized snapshot triggers two fixed passes:
+
+1. embedded JPEG, PNG and WebP parts become WebP quality 75 when that encoding is smaller;
+2. if the rebuilt snapshot remains oversized, eligible parts become greyscale WebP quality 75 when smaller.
+
+The first rebuilt MHTML within the limit becomes the snapshot. Packrat discards the oversized original and rejected candidates. If neither pass fits, the capture fails. SVG, GIF and non-image MIME parts are unchanged.
+
+## Storage compression
+
+`PACKRAT_HTML_COMPRESSION=auto` attempts `Bun.zstdCompress()` for every accepted web or imported HTML body. Packrat stores zstd only when it is smaller than the canonical bytes; otherwise it stores `none`. Readers and verification accept `none`, `gzip` and `zstd` permanently for existing mixed data.
+
+`html_size`, the page limit and `content_hash` always describe the uncompressed canonical bytes. Storage compression has no browser compatibility effect because Packrat decompresses a BLOB before rendering or download.

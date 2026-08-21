@@ -1,6 +1,6 @@
 # bun-packrat documentation
 
-These documents describe the running service, its interfaces and the remaining migration work.
+These documents describe the v0.3.0 service, its interfaces and its capture/storage behaviour.
 
 ## Use and operate Packrat
 
@@ -15,4 +15,4 @@ These documents describe the running service, its interfaces and the remaining m
 
 - [Architecture](architecture.md) — storage model, component boundaries and capture flow.
 - [Product requirements](PRD.md) — requirements, acceptance criteria and ArchiveBox migration design.
-- [Implementation plan](PLAN.md) — implemented work, planned phases and open decisions.
+- [Implementation plan](PLAN.md) — ordered v0.3.0 implementation, testing, migration, release and deployment steps.

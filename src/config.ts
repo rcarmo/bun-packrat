@@ -6,9 +6,9 @@
 import type { PackratConfig } from './types.js';
 
 export function loadConfig(): PackratConfig {
-  const compression = process.env.PACKRAT_HTML_COMPRESSION ?? 'none';
-  if (compression !== 'none' && compression !== 'gzip') {
-    throw new Error('PACKRAT_HTML_COMPRESSION must be "none" or "gzip"');
+  const compression = process.env.PACKRAT_HTML_COMPRESSION ?? 'auto';
+  if (compression !== 'none' && compression !== 'auto') {
+    throw new Error('PACKRAT_HTML_COMPRESSION must be "none" or "auto"');
   }
 
   const waitUntil = process.env.PACKRAT_CAPTURE_WAIT_UNTIL ?? 'networkidle';

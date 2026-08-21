@@ -34,14 +34,14 @@ Create `config/.env` to override container settings:
 
 ```dotenv
 PACKRAT_BASE_URL=http://packrat.local
-PACKRAT_HTML_COMPRESSION=gzip
+PACKRAT_HTML_COMPRESSION=auto
 PACKRAT_MAX_CONCURRENT_CAPTURES=3
 PACKRAT_MAX_PDF_BYTES=104857600
 PACKRAT_AUTH_USER=packrat
 PACKRAT_AUTH_PASSWORD=replace-with-a-secret
 ```
 
-The entry point reads `/config/.env`. To run with host-matching file ownership, uncomment `PUID` and `PGID` in `docker-compose.yml`; these values must be container environment variables rather than entries in `/config/.env`. The Compose definition allocates 256 MB of shared memory for Chromium.
+The entry point reads `/config/.env`. To run with host-matching file ownership, uncomment `PUID` and `PGID` in `docker-compose.yml`; these values must be container environment variables rather than entries in `/config/.env`. The Compose definition allocates 256 MB of shared memory for Chromium. v0.3.0 starts Bun with `--no-orphans` so a watchdog or service exit also terminates descendant Chromium processes.
 
 ### Make targets
 
@@ -59,7 +59,7 @@ The entry point reads `/config/.env`. To run with host-matching file ownership, 
 
 ## Published images
 
-Pushing a semantic version tag such as `v0.2.7` runs type checking and the full test suite before publishing a multi-platform image to `ghcr.io/rcarmo/bun-packrat`. Chromium installation in the test job has a five-minute bound and one retry. The workflow produces full, major/minor, major and `latest` tags for `linux/amd64` and `linux/arm64`, uses the GitHub Actions build cache, and attaches build provenance.
+Pushing a semantic version tag such as `v0.3.0` runs type checking and the full test suite before publishing a multi-platform image to `ghcr.io/rcarmo/bun-packrat`. Chromium installation in the test job has a five-minute bound and one retry. The workflow produces full, major/minor, major and `latest` tags for `linux/amd64` and `linux/arm64`, uses the GitHub Actions build cache, and attaches build provenance.
 
 The release workflow keeps the five newest semantic-version package releases and their multi-platform manifest safety window. It removes older package versions outside that window and keeps the five newest workflow runs. Publication runs only for `v*` tag pushes; ordinary branches and manual dispatches cannot publish or prune images.
 
@@ -75,7 +75,7 @@ Install dependencies and ensure Playwright can find Chromium:
 bun install
 PLAYWRIGHT_BROWSERS_PATH=/workspace/bin/pw-browsers \
 PACKRAT_AUTH_DISABLED=1 \
-bun run src/server.ts
+bun run start
 ```
 
 The default database path is `./data/packrat.db`. Migrations run when the database opens.
@@ -85,7 +85,7 @@ For an authenticated local service:
 ```bash
 PACKRAT_AUTH_USER=packrat \
 PACKRAT_AUTH_PASSWORD='replace-with-a-secret' \
-bun run src/server.ts
+bun run start
 ```
 
 ## Health check
@@ -98,7 +98,7 @@ curl -u 'packrat:replace-with-a-secret' \
 An explicitly unauthenticated deployment does not require credentials:
 
 ```bash
-PACKRAT_AUTH_DISABLED=1 bun run src/server.ts
+PACKRAT_AUTH_DISABLED=1 bun run start
 curl http://localhost:3047/api/status
 ```
 

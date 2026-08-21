@@ -1,5 +1,7 @@
 # Command-line interface
 
+This reference describes the v0.3.0 command-line interface.
+
 Run the CLI from the repository root:
 
 ```bash
@@ -22,7 +24,8 @@ The CLI opens the database specified by `PACKRAT_DB`, which defaults to `./data/
 | `delete <id> --confirm` | Permanently delete one capture and its dependent data. |
 | `backup <destination.sqlite>` | Create a consistent backup with `VACUUM INTO`. |
 | `verify [--all] [--id N]` | Run SQLite integrity and capture hash checks. |
-| `migrate` | Open the database and apply pending migrations. |
+| `migrate` | Open the database and apply pending schema migrations. |
+| `migrate storage [--dry-run] [--limit N]` | Verify capture bodies and replace a stored BLOB only when zstd is smaller. |
 | `status` | Print capture, queue and database statistics. |
 
 ## Capture
@@ -51,7 +54,8 @@ bun run src/cli/index.ts import archivebox \
 Run or resume the import:
 
 ```bash
-PACKRAT_HTML_COMPRESSION=gzip \
+# v0.3.0 automatic advantageous zstd policy
+PACKRAT_HTML_COMPRESSION=auto \
   bun run src/cli/index.ts import archivebox \
   --data-root /srv/archivebox/data \
   --report-json archivebox-import.json \
@@ -125,4 +129,14 @@ bun run src/cli/index.ts verify --all
 bun run src/cli/index.ts verify --id 123
 ```
 
-`verify --all` checks `PRAGMA integrity_check` and recomputes stored content hashes. Use it after a backup or restore.
+`verify --all` checks `PRAGMA integrity_check`, decompresses `none`, `gzip` and `zstd` bodies, and recomputes canonical content hashes. Use it after a backup, restore or storage migration.
+
+## Storage migration
+
+```bash
+bun run src/cli/index.ts migrate storage --dry-run
+bun run src/cli/index.ts migrate storage --limit 100
+bun run src/cli/index.ts migrate storage
+```
+
+The command processes capture bodies sequentially. It verifies the existing uncompressed SHA-256 before creating a zstd candidate and updates one row only when zstd is smaller than its current stored BLOB. `--dry-run` reports potential changes without writing; `--limit` bounds a rehearsal. Durable changed, retained and failed outcomes let bounded reruns advance to pending rows. Existing gzip or uncompressed rows remain unchanged when their stored form is smaller than or equal to zstd. The operation does not run `VACUUM` automatically.
