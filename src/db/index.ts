@@ -390,19 +390,50 @@ export interface DeleteCaptureResult {
   orphanUrlRemoved: boolean;
 }
 
-export function getCaptureDeleteImpact(db: Database, id: number) {
-  const capture = getCaptureById(db, id);
-  if (!capture) return null;
-  return {
-    id: capture.id,
-    title: capture.title,
-    sourceUrl: capture.source_url,
-    capturedAt: capture.captured_at,
-    aliases: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM capture_aliases WHERE capture_id=?').get(id)?.n ?? 0,
-    metadata: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM metadata WHERE capture_id=?').get(id)?.n ?? 0,
-    tags: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM capture_tags WHERE capture_id=?').get(id)?.n ?? 0,
-    jobs: db.query<{ n: number }, [number]>('SELECT COUNT(*) n FROM jobs WHERE capture_id=?').get(id)?.n ?? 0,
-  };
+export interface CaptureDeleteImpact {
+  id: number;
+  title: string | null;
+  sourceUrl: string;
+  capturedAt: string;
+  aliases: number;
+  metadata: number;
+  tags: number;
+  jobs: number;
+}
+
+export function getCaptureDeleteImpact(db: Database, id: number): CaptureDeleteImpact | null {
+  return getCaptureDeleteImpactsByIds(db, [id]).get(id) ?? null;
+}
+
+/** Load deletion summaries for a result page with a fixed number of queries.
+ * The grouped counts avoid both statement-level N+1 work and repeated scans of
+ * the jobs table, whose capture_id column is intentionally nullable. */
+export function getCaptureDeleteImpactsByIds(db: Database, captureIds: number[]): Map<number, CaptureDeleteImpact> {
+  const uniqueIds = [...new Set(captureIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (!uniqueIds.length) return new Map();
+  const placeholders = uniqueIds.map(() => '?').join(',');
+  const captures = db.query<Omit<CaptureDeleteImpact, 'aliases' | 'metadata' | 'tags' | 'jobs'>, number[]>(`
+    SELECT id,title,source_url sourceUrl,captured_at capturedAt
+    FROM captures WHERE id IN (${placeholders})
+  `).all(...uniqueIds);
+  const result = new Map(captures.map((capture) => [capture.id, {
+    ...capture, aliases:0, metadata:0, tags:0, jobs:0,
+  }]));
+  const params = [...uniqueIds, ...uniqueIds, ...uniqueIds, ...uniqueIds];
+  const counts = db.query<{ capture_id: number; kind: 'aliases' | 'metadata' | 'tags' | 'jobs'; count: number }, number[]>(`
+    SELECT capture_id,'aliases' kind,COUNT(*) count FROM capture_aliases WHERE capture_id IN (${placeholders}) GROUP BY capture_id
+    UNION ALL
+    SELECT capture_id,'metadata' kind,COUNT(*) count FROM metadata WHERE capture_id IN (${placeholders}) GROUP BY capture_id
+    UNION ALL
+    SELECT capture_id,'tags' kind,COUNT(*) count FROM capture_tags WHERE capture_id IN (${placeholders}) GROUP BY capture_id
+    UNION ALL
+    SELECT capture_id,'jobs' kind,COUNT(*) count FROM jobs WHERE capture_id IN (${placeholders}) GROUP BY capture_id
+  `).all(...params);
+  for (const row of counts) {
+    const impact = result.get(row.capture_id);
+    if (impact) impact[row.kind] = row.count;
+  }
+  return result;
 }
 
 export function deleteCapture(db: Database, id: number): DeleteCaptureResult | null {
@@ -784,6 +815,23 @@ export function getCaptureTags(db: Database, captureId: number): string[] {
     )
     .all(captureId)
     .map((r) => r.name);
+}
+
+/** Load tags for a result page in one query instead of issuing one query per
+ * capture. Every requested ID is present in the returned map. */
+export function getCaptureTagsByIds(db: Database, captureIds: number[]): Map<number, string[]> {
+  const uniqueIds = [...new Set(captureIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  const result = new Map(uniqueIds.map((id) => [id, [] as string[]]));
+  if (!uniqueIds.length) return result;
+  const placeholders = uniqueIds.map(() => '?').join(',');
+  const rows = db.query<{ capture_id: number; name: string }, number[]>(`
+    SELECT ct.capture_id,t.name
+    FROM capture_tags ct JOIN tags t ON t.id=ct.tag_id
+    WHERE ct.capture_id IN (${placeholders})
+    ORDER BY ct.capture_id,t.name COLLATE NOCASE
+  `).all(...uniqueIds);
+  for (const row of rows) result.get(row.capture_id)?.push(row.name);
+  return result;
 }
 
 export function listTags(db: Database): Array<{ name: string; count: number }> {

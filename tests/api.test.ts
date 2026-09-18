@@ -98,6 +98,31 @@ describe('agent capture API', () => {
     expect((await malformed.json() as any).error).toContain('Invalid search query');
   });
 
+  test('serves the default homepage from cache and refreshes it after database changes', async () => {
+    const first = await fetch(base);
+    expect(first.status).toBe(200);
+    expect(first.headers.get('cache-control')).toBe('no-store');
+    const firstHtml = await first.text();
+    expect(firstHtml).toContain('Canonical API fixture');
+
+    const writeDb = openDatabase(dbPath);
+    const addedId = addCapture(writeDb, 'https://example.com/cache-refresh', 'Cache refresh fixture', Buffer.from(LEGACY_HTML), 'article');
+    writeDb.close();
+
+    const refreshed = await fetch(base);
+    expect(refreshed.status).toBe(200);
+    expect(await refreshed.text()).toContain(`href="/captures/${addedId}/article">Cache refresh fixture</a>`);
+
+    const filtered = await fetch(`${base}/?status=all`);
+    const filteredHtml = await filtered.text();
+    const secondDb = openDatabase(dbPath);
+    const pendingUrl = getOrCreateUrl(secondDb, 'https://example.com/filter-refresh', 'https://example.com/filter-refresh');
+    const pendingId = insertCapture(secondDb, { url_id:pendingUrl.id,source_url:pendingUrl.original,final_url:pendingUrl.original,html:null,compression:'none',content_hash:null,html_size:null,title:'Filter refresh fixture',author:null,site_name:null,published_at:null,excerpt:null,lang:null,extracted_text:null,mode:'full_page',status:'pending',capture_tool:'test',warnings:null });
+    secondDb.close();
+    expect(filteredHtml).not.toContain('Filter refresh fixture');
+    expect(await fetch(`${base}/?status=all`).then((response) => response.text())).toContain(`href="/captures/${pendingId}/article">Filter refresh fixture</a>`);
+  });
+
   test('exposes the original URL in capture listings and reading views', async () => {
     const source = 'https://example.com/canonical';
     const expectedLink = `href="${source}" rel="noopener noreferrer" target="_blank">Original`;

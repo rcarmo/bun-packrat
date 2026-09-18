@@ -28,6 +28,8 @@ export interface QueueOptions {
   pollIntervalMs?: number;
   /** Max concurrent jobs (default from config) */
   maxConcurrent?: number;
+  /** Called after a capture job commits its final database state. */
+  onCaptureSettled?: (result: { jobId: number; captureId: number | null; status: 'succeeded' | 'failed' }) => void | Promise<void>;
 }
 
 const HANDLED_KINDS = ['capture'] as const;
@@ -37,6 +39,7 @@ export class JobQueue {
   private config: PackratConfig;
   private pollIntervalMs: number;
   private maxConcurrent: number;
+  private onCaptureSettled?: QueueOptions['onCaptureSettled'];
   private active = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
@@ -46,6 +49,7 @@ export class JobQueue {
     this.config = opts.config;
     this.pollIntervalMs = opts.pollIntervalMs ?? 2000;
     this.maxConcurrent = opts.maxConcurrent ?? opts.config.maxConcurrentCaptures;
+    this.onCaptureSettled = opts.onCaptureSettled;
   }
 
   start(): void {
@@ -121,11 +125,20 @@ export class JobQueue {
 
       finishJob(this.db, job.id, 'succeeded', result);
       console.log(JSON.stringify({ event: 'job.succeeded', jobId: job.id, kind: job.kind }));
+      if (job.kind === 'capture') this.notifyCaptureSettled(job.id, Number(result.captureId) || null, 'succeeded');
     } catch (err: any) {
       const errMsg = err?.message ?? String(err);
       finishJob(this.db, job.id, 'failed', undefined, errMsg);
       console.error(JSON.stringify({ event: 'job.failed', jobId: job.id, kind: job.kind, error: errMsg }));
+      if (job.kind === 'capture') this.notifyCaptureSettled(job.id, null, 'failed');
     }
+  }
+
+  private notifyCaptureSettled(jobId: number, captureId: number | null, status: 'succeeded' | 'failed'): void {
+    if (!this.onCaptureSettled) return;
+    void Promise.resolve(this.onCaptureSettled({ jobId, captureId, status })).catch((error: any) => {
+      console.error(JSON.stringify({ event:'queue.capture_settled_hook_failed', jobId, captureId, status, error:error?.message ?? String(error) }));
+    });
   }
 
   private async handleCapture(

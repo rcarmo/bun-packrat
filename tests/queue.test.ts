@@ -4,6 +4,8 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { openDatabase, runMigrations, createJob, claimNextJob, finishJob, recoverPendingCaptures, recoverStuckJobs, getJobById, getOrCreateUrl, insertCapture } from '../src/db/index.js';
+import { loadConfig } from '../src/config.js';
+import { JobQueue } from '../src/queue/index.js';
 import type { Database } from 'bun:sqlite';
 
 let db: Database;
@@ -122,6 +124,27 @@ describe('job lifecycle', () => {
     const payload = JSON.parse(job!.payload!);
     expect(payload.url).toBe('https://example.com/test');
     expect(payload.mode).toBe('article');
+  });
+
+  test('notifies the homepage cache after a capture job settles', async () => {
+    const notifications: Array<{ jobId:number; captureId:number | null; status:string }> = [];
+    const queue = new JobQueue({ db, config:loadConfig(), onCaptureSettled:(result) => { notifications.push(result); } });
+    const url = getOrCreateUrl(db, 'https://example.com/settled', 'https://example.com/settled');
+    const captureId = insertCapture(db, {
+      url_id:url.id,source_url:url.original,final_url:url.original,html:null,compression:'none',content_hash:null,html_size:null,
+      title:'Settled',author:null,site_name:null,published_at:null,excerpt:null,lang:null,extracted_text:null,
+      mode:'metadata_only',status:'succeeded',capture_tool:'test',warnings:null,
+    });
+    const jobId = createJob(db, 'capture', { url:url.original });
+    const queueInternals = queue as unknown as { handleCapture:(jobId:number,payload:Record<string, unknown>) => Promise<Record<string, unknown>>; runJob:(job:unknown) => Promise<void> };
+    queueInternals.handleCapture = async () => {
+      db.exec('UPDATE jobs SET capture_id=? WHERE id=?', [captureId, jobId]);
+      return { captureId };
+    };
+    const job = claimNextJob(db, ['capture'])!;
+    await queueInternals.runJob(job);
+    await Bun.sleep(0);
+    expect(notifications).toEqual([{ jobId, captureId, status:'succeeded' }]);
   });
 });
 

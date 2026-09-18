@@ -8,9 +8,9 @@ import type { PackratConfig, CaptureMetadataRow } from './types.js';
 import {
   openDatabase, runMigrations,
   getCaptureHtml, getCaptureById, getSourcePdfMetadata, getSourcePdfRange, getSourcePdfText, listCaptures, searchCaptures,
-  getCaptureTags, addTagToCapture, removeTagFromCapture, listTags, getJobById, getJobAttempts,
+  getCaptureTags, getCaptureTagsByIds, addTagToCapture, removeTagFromCapture, listTags, getJobById, getJobAttempts,
   createJob, getCaptureAliases, updateCaptureNote, cancelJob,
-  countCaptures, getCaptureDeleteImpact, deleteCapture,
+  countCaptures, getCaptureDeleteImpact, getCaptureDeleteImpactsByIds, deleteCapture,
 } from './db/index.js';
 import { JobQueue } from './queue/index.js';
 import { exportHtml, slugify } from './export/html.js';
@@ -34,8 +34,19 @@ runMigrations(db);
 const markdownAssetCache = new Map<number, { assets: MarkdownAsset[]; bytes: number; touchedAt: number }>();
 const MAX_MARKDOWN_ASSET_CACHE_BYTES = 32 * 1024 * 1024;
 
+type CachedIndexResponse = { body: string; status: number; headers: Array<[string, string]>; dataVersion: number; generation: number };
+let defaultIndexResponseCache: Promise<CachedIndexResponse> | null = null;
+let indexCacheGeneration = 0;
+
 // Start job queue
-const queue = new JobQueue({ db, config });
+const queue = new JobQueue({
+  db,
+  config,
+  onCaptureSettled: async () => {
+    invalidateIndexResponseCache();
+    await warmDefaultIndexResponse();
+  },
+});
 queue.start();
 
 // Graceful shutdown
@@ -57,7 +68,7 @@ const server = Bun.serve({
 
     // ── Static index ──────────────────────────────────────────────────────
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
-      return renderIndex(db, url);
+      return renderCachedIndex(db, url);
     }
 
     if (method === 'GET' && path === '/bookmarklet.js') {
@@ -128,6 +139,7 @@ const server = Bun.serve({
       const capture = getCaptureById(db, parseInt(recaptureMatch[1], 10));
       if (!capture) return json404('Capture not found');
       const jobId = createJob(db, 'capture', { url: capture.source_url, force: true });
+      invalidateIndexResponseCache();
       return Response.json({ message: 'Recapture queued', jobId, url: capture.source_url }, { status: 202 });
     }
 
@@ -170,6 +182,7 @@ const server = Bun.serve({
         try {
           if (method === 'POST') addTagToCapture(db, id, tag);
           else removeTagFromCapture(db, id, tag);
+          invalidateIndexResponseCache();
         } catch (err: any) {
           return Response.json({ error: err?.message ?? 'Invalid tag' }, { status: 400 });
         }
@@ -218,7 +231,11 @@ const server = Bun.serve({
           return Response.json({ error: 'Explicit deletion confirmation is required', impact: getCaptureDeleteImpact(db, id) }, { status: 409 });
         }
         const result = deleteCapture(db, id);
-        if (result) markdownAssetCache.delete(id);
+        if (result) {
+          markdownAssetCache.delete(id);
+          invalidateIndexResponseCache();
+          void warmDefaultIndexResponse();
+        }
         return result ? Response.json({ ok: true, ...result }) : json404('Capture not found');
       }
     }
@@ -235,6 +252,7 @@ const server = Bun.serve({
         return Response.json({ error: 'Idempotency-Key is too long' }, { status: 400 });
       }
       const jobId = createJob(db, 'capture', { url: rawUrl, force: body?.force === true }, idempotencyKey);
+      invalidateIndexResponseCache();
       return Response.json({ message: 'Capture queued', jobId, url: rawUrl }, { status: 202 });
     }
 
@@ -273,6 +291,10 @@ console.log(
     db: config.dbPath,
   }),
 );
+
+// Populate the common landing page off the request path. Errors remain visible
+// in logs and the first request can still render it normally.
+void warmDefaultIndexResponse();
 
 // ────────────────────────────────────────────────────────────────────────────
 // Export dispatcher
@@ -577,6 +599,69 @@ function renderArticleDocument(html: string): string {
   return html.includes('</head>') ? html.replace(/<\/head>/i, `${articleCss}</head>`) : html.replace(/<body/i, `<head>${articleCss}</head><body`);
 }
 
+function invalidateIndexResponseCache(): void {
+  indexCacheGeneration++;
+  defaultIndexResponseCache = null;
+}
+
+async function renderCachedIndex(db: Database, url: URL): Promise<Response> {
+  // Only the common unfiltered landing page remains resident. Search, filters,
+  // pagination and bookmarklet-prefilled forms always render against current
+  // state and cannot accumulate user-specific cache entries.
+  if (url.searchParams.size > 0) return renderIndex(db, url);
+  for (;;) {
+    let pending = defaultIndexResponseCache;
+    if (!pending) {
+      pending = renderVersionConsistentDefaultIndex(db, url);
+      defaultIndexResponseCache = pending;
+      pending.catch(() => {
+        if (defaultIndexResponseCache === pending) defaultIndexResponseCache = null;
+      });
+    }
+    const cached = await pending;
+    const currentVersion = sqliteDataVersion(db);
+    if (cached.generation === indexCacheGeneration && cached.dataVersion === currentVersion) {
+      return new Response(cached.body, { status: cached.status, headers: cached.headers });
+    }
+    if (defaultIndexResponseCache === pending) defaultIndexResponseCache = null;
+  }
+}
+
+async function renderVersionConsistentDefaultIndex(db: Database, url: URL): Promise<CachedIndexResponse> {
+  for (;;) {
+    const generation = indexCacheGeneration;
+    const beforeVersion = sqliteDataVersion(db);
+    const response = await renderIndex(db, url);
+    const body = await response.text();
+    const afterVersion = sqliteDataVersion(db);
+    if (generation !== indexCacheGeneration || beforeVersion !== afterVersion) continue;
+    return {
+      body,
+      status: response.status,
+      headers: Array.from(response.headers as unknown as Iterable<[string, string]>),
+      dataVersion: afterVersion,
+      generation,
+    };
+  }
+}
+
+function sqliteDataVersion(db: Database): number {
+  return db.query<{ data_version: number }, []>('PRAGMA data_version').get()?.data_version ?? 0;
+}
+
+async function warmDefaultIndexResponse(): Promise<void> {
+  try {
+    const url = new URL(config.baseUrl);
+    url.pathname = '/';
+    url.search = '';
+    const response = await renderCachedIndex(db, url);
+    await response.text();
+    console.log(JSON.stringify({ event:'index.cache_warmed' }));
+  } catch (error: any) {
+    console.error(JSON.stringify({ event:'index.cache_warm_failed', error:error?.message ?? String(error) }));
+  }
+}
+
 async function renderIndex(db: Database, url: URL): Promise<Response> {
   const archive = url.searchParams.get('archive') ?? '';
   const q      = url.searchParams.get('q') ?? '';
@@ -595,6 +680,9 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
     return Response.redirect(target, 302);
   }
   const { rows, matchingCount, error: searchError } = page;
+  const rowIds = rows.map((row) => row.id);
+  const captureTagsById = getCaptureTagsByIds(db, rowIds);
+  const deleteImpactsById = getCaptureDeleteImpactsByIds(db, rowIds);
 
   const totalCount = db
     .query<{ n: number }, []>(`SELECT COUNT(*) as n FROM captures WHERE status='succeeded'`)
@@ -637,7 +725,7 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
 
   const items = rows.map((c) => {
     const sourceHref = safeExternalHref(c.source_url);
-    const captureTags = getCaptureTags(db, c.id);
+    const captureTags = captureTagsById.get(c.id) ?? [];
     const metadataOnly = c.mode === 'metadata_only';
     const sourcePdf = c.mode === 'pdf';
     const primaryHref = metadataOnly || sourcePdf ? `/captures/${c.id}` : `/captures/${c.id}/article`;
@@ -668,7 +756,7 @@ async function renderIndex(db: Database, url: URL): Promise<Response> {
               <button class="manage-tags" data-id="${c.id}" type="button" aria-expanded="false" aria-controls="tag-editor-${c.id}">Manage tags…</button>
               <div class="tag-editor" id="tag-editor-${c.id}" data-id="${c.id}" hidden></div>
               <button class="recapture" data-id="${c.id}" type="button">Recapture</button>
-              <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(getCaptureDeleteImpact(db, c.id)))}" type="button">Delete…</button>
+              <button class="delete" data-id="${c.id}" data-title="${esc(c.title ?? '(no title)')}" data-source="${esc(c.source_url)}" data-time="${esc(c.captured_at)}" data-impact="${esc(JSON.stringify(deleteImpactsById.get(c.id) ?? null))}" type="button">Delete…</button>
             </div>
           </div>
         </details>
@@ -774,6 +862,7 @@ ul{list-style:none;margin:0;padding:0}.item{position:relative;padding:16px;borde
   return new Response(html, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
       'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self' data:; base-uri 'none'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
