@@ -98,6 +98,22 @@ describe('agent capture API', () => {
     expect((await malformed.json() as any).error).toContain('Invalid search query');
   });
 
+  test('serves the default homepage from cache and refreshes it after database changes', async () => {
+    const first = await fetch(base);
+    expect(first.status).toBe(200);
+    expect(first.headers.get('cache-control')).toBe('no-store');
+    const firstHtml = await first.text();
+    expect(firstHtml).toContain('Canonical API fixture');
+
+    const writeDb = openDatabase(dbPath);
+    const addedId = addCapture(writeDb, 'https://example.com/cache-refresh', 'Cache refresh fixture', Buffer.from(LEGACY_HTML), 'article');
+    writeDb.close();
+
+    const refreshed = await fetch(base);
+    expect(refreshed.status).toBe(200);
+    expect(await refreshed.text()).toContain(`href="/captures/${addedId}/article">Cache refresh fixture</a>`);
+  });
+
   test('exposes the original URL in capture listings and reading views', async () => {
     const source = 'https://example.com/canonical';
     const expectedLink = `href="${source}" rel="noopener noreferrer" target="_blank">Original`;

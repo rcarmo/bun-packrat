@@ -1,6 +1,6 @@
 # Testing
 
-Packrat uses the Bun test runner and TypeScript's no-emit type check. The v0.3.0 release gate contains 178 tests across 19 files, including oversized-MHTML, mixed-codec and storage-migration coverage.
+Packrat uses the Bun test runner and TypeScript's no-emit type check. The v0.3.1 release gate contains 180 tests across 19 files, including oversized-MHTML, mixed-codec, storage-migration and homepage-cache invalidation coverage.
 
 ## Full gate
 

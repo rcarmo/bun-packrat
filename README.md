@@ -46,14 +46,16 @@ The default database path is `./data/packrat.db`.
 
 ## Project status
 
-Packrat v0.3.0 runs on Bun 1.4 and includes fresh web/PDF capture, search, offline reading, export, deletion, backup, verification, queue recovery, ArchiveBox import and original-PDF enrichment. It also:
+Packrat v0.3.1 runs on Bun 1.4 and includes fresh web/PDF capture, search, offline reading, export, deletion, backup, verification, queue recovery, ArchiveBox import and original-PDF enrichment. It also:
 
 - recompresses embedded JPEG, PNG and WebP MIME parts when MHTML exceeds 20 MiB;
 - tries colour WebP quality 75, then greyscale WebP quality 75;
 - attempts zstd for every accepted web or imported HTML body and stores it only when smaller;
-- migrates existing bodies only when verified zstd output is smaller.
+- migrates existing bodies only when verified zstd output is smaller;
+- batches homepage metadata queries and keeps a bounded rendered-page cache warm across idle periods;
+- invalidates the page cache on archive mutations and rebuilds the default homepage after each capture job settles.
 
-See the [v0.3.0 implementation plan](docs/PLAN.md). ArchiveBox hostname cutover and retirement checks are separate operational work.
+See the [v0.3.0 implementation plan](docs/PLAN.md) for the storage/capture work. ArchiveBox hostname cutover and retirement checks are separate operational work.
 
 See the [documentation index](docs/README.md) for setup, configuration, architecture, API, CLI and operations. Requirements and delivery status are tracked in the [product requirements](docs/PRD.md) and [implementation plan](docs/PLAN.md).
 
