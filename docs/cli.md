@@ -1,6 +1,6 @@
 # Command-line interface
 
-This reference describes the v0.3.0 command-line interface.
+This reference describes the v0.3.1 command-line interface.
 
 Run the CLI from the repository root:
 
@@ -54,7 +54,7 @@ bun run src/cli/index.ts import archivebox \
 Run or resume the import:
 
 ```bash
-# v0.3.0 automatic advantageous zstd policy
+# Automatic advantageous zstd policy introduced in v0.3.0
 PACKRAT_HTML_COMPRESSION=auto \
   bun run src/cli/index.ts import archivebox \
   --data-root /srv/archivebox/data \

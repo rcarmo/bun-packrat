@@ -1,7 +1,7 @@
 ---
 title: Single-File Web Archive PRD
 created: 2026-08-10T00:12:35Z
-updated: 2026-08-21T08:30:00Z
+updated: 2026-09-18T18:30:00Z
 tags: [archive, bun, playwright, prd, sqlite, web]
 status: active
 ---
@@ -53,7 +53,7 @@ The initial deployment has one trusted user on the local network.
 ### Read on iOS
 
 1. The user opens the archive index in Safari.
-2. Search and filters return captures without client-side application requirements.
+2. The unfiltered homepage uses one version-checked in-process response, while search, filters, pagination and bookmarklet-prefilled pages render from current SQLite state.
 3. Opening an item serves `text/html; charset=utf-8` from the database.
 4. The page uses responsive screen CSS and makes no external network requests by default.
 
@@ -210,6 +210,8 @@ The archive UI provides:
 
 Search results must render server-side or as progressively enhanced HTML so the index remains usable in iOS Safari with minimal JavaScript.
 
+The unfiltered homepage may keep one rendered response in process memory. It has no expiry. Local archive mutations invalidate it explicitly, and `PRAGMA data_version` detects commits from other SQLite connections. Packrat publishes a render only when its local generation and external data version remain unchanged throughout rendering. Any query parameter bypasses this resident entry. Startup and capture-settlement warming run outside queue job completion, and every index response retains `Cache-Control: no-store`.
+
 #### Sorting and pagination
 
 The archive index and `GET /api/captures` use the same sorting and pagination rules:
@@ -292,7 +294,7 @@ status
 | `markdown-zip` | `application/zip` | Offline Markdown and local assets. |
 | `epub` | `application/epub+zip` | On-demand EPUB 3 article export. |
 | `pdf` | `application/pdf` | On-demand PDF of the safe full-page HTML. |
-| `source-pdf` | `application/pdf` | Byte-exact stored source PDF with `HEAD` and single-byte range delivery. |
+| `source-pdf` | `application/pdf` | Byte-exact stored source PDF with `HEAD` and one byte-range request. |
 | `source-pdf-text` | `text/plain` | Bounded PDF.js extraction; empty for verified image-only PDFs. |
 
 Successful extraction responses include `X-Packrat-Capture-Id`, `X-Packrat-Content-Format`, `X-Packrat-Content-Hash`, `X-Packrat-Source-Url` and `X-Packrat-Final-Url`. Responses use `Cache-Control: no-store`. Unknown formats return `404`; missing or unsuccessful captures return `404`; a requested canonical format unavailable for a legacy capture returns `409`.
@@ -423,7 +425,7 @@ The exporter is a pure Bun ZIP implementation adapted from `rcarmo/bun-readlater
 
 ### PDF
 
-Rendered page PDFs are generated only when requested. Playwright applies print CSS and streams the result without retaining it. Direct source PDFs are different: Packrat retains their exact bytes, validates `%PDF-`, deduplicates by SHA-256, supports inline/attachment `HEAD` and single-byte `Range` responses, and retains encrypted or image-only documents even when extraction cannot produce text.
+Rendered page PDFs are generated only when requested. Playwright applies print CSS and streams the result without retaining it. Direct source PDFs are different: Packrat retains their exact bytes, validates `%PDF-`, deduplicates by SHA-256, supports inline or attachment `HEAD` and one byte-range request, and retains encrypted or image-only documents even when extraction cannot produce text.
 
 PDF.js runs in an isolated worker with defaults of 100 MiB per PDF, 60 seconds, 1,000 pages and 10 MiB of extracted UTF-8 text. Extraction failure never rolls back valid PDF storage. OCR and stored PDF passwords are out of scope.
 
@@ -476,6 +478,7 @@ These original design targets are not automated release gates:
 - Import memory: under 1 GB per worker, with a configurable lower concurrency for small hosts.
 - Import resumption: no more than one bounded batch needs reprocessing after forced termination.
 - Export: typical Markdown or EPUB output starts within 15 seconds.
+- Unfiltered homepage: first accepted response after a production container restart under 500 ms; warm responses under 100 ms. v0.3.1 measured 195.793 ms and 3.223 ms respectively on VM 119.
 
 Large pages may exceed these targets. The oversized-image fallback processes raster parts sequentially and must fail with explicit configured limits rather than exhausting host memory or disk.
 
@@ -526,7 +529,7 @@ Large pages may exceed these targets. The oversized-image fallback processes ras
 - [x] The offline Markdown ZIP continues to contain local relative asset references.
 - [x] Missing or invalid original image URLs produce deterministic alt-text output and a capture warning.
 
-### Article list sorting and pagination
+### Article list sorting, pagination and cache
 
 - [x] The unsearched archive list defaults to newest first with deterministic ID tie-breaking.
 - [x] Full-text results support relevance, newest and oldest sorting.
@@ -534,6 +537,10 @@ Large pages may exceed these targets. The oversized-image fallback processes ras
 - [x] The HTML index displays the current result range and total matching count.
 - [x] The captures API returns `limit`, `offset`, total count and previous/next offsets.
 - [x] Equal timestamps, empty result pages and deletion of the last item on a page behave as specified.
+- [x] The unfiltered homepage uses one generation- and `data_version`-checked resident response without a time-to-live.
+- [x] Search, filter, pagination and bookmarklet-prefilled pages always render live.
+- [x] Local mutations and external SQLite commits reject stale HTML, including writes that occur during rendering.
+- [x] Startup and capture-settlement warming do not delay queue turnover.
 
 ### Capture deletion
 
@@ -590,9 +597,17 @@ Large pages may exceed these targets. The oversized-image fallback processes ras
 - [x] Attempt zstd for every accepted body and store it only when smaller.
 - [x] Add the resumable, hash-checked, advantageous storage migration.
 - [x] Validate resource use and offline rendering on the production profile.
-- [ ] Validate migration and rollback during the production deployment.
+- [x] Validate migration and rollback during the production deployment.
 
-### Phase 6 — cutover 🔜
+### Phase 6 — homepage latency and cache correctness ✅
+
+- [x] Batch index tag and deletion-impact queries.
+- [x] Keep only the unfiltered homepage resident, without a time-based expiry.
+- [x] Reject stale renders after local mutations, external SQLite commits and writes during rendering.
+- [x] Warm after startup and capture settlement without holding queue workers.
+- [x] Verify the first accepted production response after restart and the post-settlement refresh path.
+
+### Phase 7 — cutover 🔜
 
 - [x] Freeze ArchiveBox writes (VM stopped as of 2026-08-10).
 - [x] Run the import, original-PDF enrichment and reconciliation.
@@ -602,14 +617,14 @@ Large pages may exceed these targets. The oversized-image fallback processes ras
 
 ## Open decisions
 
-1. HTML storage format — resolved for v0.3.0: attempt zstd for every accepted body, store it only when smaller, and permanently read mixed `none`, `gzip` and `zstd` rows.
+1. HTML storage format — resolved in v0.3.0: attempt zstd for every accepted body, store it only when smaller, and permanently read mixed `none`, `gzip` and `zstd` rows.
 2. Whether exact duplicate documents share one body row — resolved for imports: exact canonical hashes reuse an existing capture and retain separate provenance outcomes; ordinary captures retain one body per row.
 3. The maximum allowed captured-page size and per-asset size — defaults set (20 MiB / 5 MiB), configurable.
 4. The freshness interval before a repeated URL submission creates a new capture — resolved: 24 hours by default, configurable via `PACKRAT_FRESHNESS_SECONDS`, with forced recapture.
 5. Whether authenticated captures are required in the first release — resolved for service access: HTTP Basic authentication is required by default. Packrat does not inject credentials into protected-site capture sessions.
 6. Whether local archived-link rewriting should be enabled by default — deferred.
 7. Whether EPUB generation uses a Bun-native writer or an external converter — resolved: pure Bun ZIP, no external tools.
-8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 6.
+8. The final service name and local hostname — `packrat` / `packrat.local`; hostname redirect in Phase 7.
 
 ## References
 

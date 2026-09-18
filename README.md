@@ -52,10 +52,13 @@ Packrat v0.3.1 runs on Bun 1.4 and includes fresh web/PDF capture, search, offli
 - tries colour WebP quality 75, then greyscale WebP quality 75;
 - attempts zstd for every accepted web or imported HTML body and stores it only when smaller;
 - migrates existing bodies only when verified zstd output is smaller;
-- batches homepage metadata queries and keeps a bounded rendered-page cache warm across idle periods;
-- invalidates the page cache on archive mutations and rebuilds the default homepage after each capture job settles.
+- batches homepage tag and deletion-impact queries;
+- keeps one rendered response for the unfiltered homepage in memory without an expiry;
+- invalidates that response after archive mutations and rebuilds it after each capture job settles.
 
-See the [v0.3.0 implementation plan](docs/PLAN.md) for the storage/capture work. ArchiveBox hostname cutover and retirement checks are separate operational work.
+Search, filter, pagination and bookmarklet-prefilled pages always render from current SQLite state. Index responses retain `Cache-Control: no-store`.
+
+See the [v0.3.1 implementation and release plan](docs/PLAN.md). ArchiveBox hostname cutover and retirement checks are separate operational work.
 
 See the [documentation index](docs/README.md) for setup, configuration, architecture, API, CLI and operations. Requirements and delivery status are tracked in the [product requirements](docs/PRD.md) and [implementation plan](docs/PLAN.md).
 

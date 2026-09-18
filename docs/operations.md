@@ -53,7 +53,7 @@ Verification runs SQLite's integrity check and recomputes SHA-256 hashes from un
 
 ## ArchiveBox migration rehearsal
 
-Keep ArchiveBox stopped or otherwise quiescent, and mount its data root read-only. The deployed v0.2.9 command uses gzip explicitly; v0.3.0 uses `PACKRAT_HTML_COMPRESSION=auto`. A v0.2.9 container rehearsal can use:
+Keep ArchiveBox stopped or otherwise quiescent, and mount its data root read-only. Packrat v0.3.0 and later use `PACKRAT_HTML_COMPRESSION=auto`; v0.2.9 used gzip explicitly. A v0.2.9 container rehearsal can use:
 
 ```bash
 docker run --rm --network none \
@@ -83,7 +83,7 @@ After reconciliation:
 
 ## Capture-body compression migration
 
-v0.3.0 reads `none`, `gzip` and `zstd` capture bodies. New bodies use zstd only when it is smaller than canonical bytes. Existing rows can be evaluated and migrated with:
+Packrat v0.3.0 and later read `none`, `gzip` and `zstd` capture bodies. New bodies use zstd only when it is smaller than canonical bytes. Existing rows can be evaluated and migrated with:
 
 ```bash
 bun run src/cli/index.ts migrate storage --dry-run
@@ -116,6 +116,20 @@ curl -u 'packrat:password' http://localhost:3047/api/jobs/42
 ```
 
 A queued job can be cancelled with `DELETE /api/jobs/:id`. Running work is allowed to finish or is recovered after process restart.
+
+## Homepage response cache
+
+Packrat keeps one rendered response for the unfiltered homepage in process memory. It has no expiry, so idle time does not recreate the cold-page delay. Search, filter, pagination and bookmarklet-prefilled pages are not resident and always render against current SQLite state.
+
+The server warms the default page after startup. Archive mutations invalidate it, and each capture job triggers an asynchronous rebuild after reaching `succeeded` or `failed`. `PRAGMA data_version` also rejects cached HTML after another SQLite connection commits. All index responses retain `Cache-Control: no-store`.
+
+Relevant structured log events are:
+
+- `index.cache_warmed` after a successful rebuild;
+- `index.cache_warm_failed` when rendering fails;
+- `queue.capture_settled_hook_failed` when the post-capture callback rejects.
+
+A warm-up is intentionally outside the queue's critical path. The job is terminal and the worker slot is available before the callback renders the page.
 
 ## Status and logs
 
@@ -159,6 +173,6 @@ Packrat does not bypass authentication, paywalls, CAPTCHAs or anti-bot controls.
 
 The default maximum accepted uncompressed MHTML size is 20 MiB. Only snapshots above this threshold invoke image recompression. Packrat processes JPEG, PNG and WebP parts sequentially and retains an encoded part only when it is smaller. Legacy asset inlining limits each asset to 5 MB. Direct source PDFs are limited to 100 MB; PDF.js extraction is limited to 60 seconds, 1,000 pages and 10 MB of UTF-8 text. Change these values through the corresponding `PACKRAT_*` environment variables after checking available memory and database growth.
 
-The rendered Markdown reader caches at most 32 MiB of decoded archived image assets in process memory. The cache is not persistent and does not change canonical bytes.
+The rendered Markdown reader caches at most 32 MiB of decoded archived image assets in process memory. The cache is not persistent and does not change canonical bytes. The separate default-homepage response cache stores one HTML document and has no time-based expiry.
 
 Rendered PDF and EPUB exports are generated on demand and are not retained after delivery. Direct source PDFs are persistent, byte-exact archive content.

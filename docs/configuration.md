@@ -27,6 +27,10 @@ Packrat reads configuration from environment variables when the process starts. 
 | `PUID` | process default | Docker entry-point user ID. Set it in the Compose environment. |
 | `PGID` | process default | Docker entry-point group ID. Set it in the Compose environment. |
 
+## Homepage cache
+
+The default homepage cache has no environment setting and no time-to-live. Packrat caches only an unfiltered `/` response, warms it after startup and capture settlement, and invalidates it after archive mutations. Any query parameter bypasses the resident entry, including search, filters, pagination and bookmarklet-prefilled `archive` values. Responses still send `Cache-Control: no-store`.
+
 ## Capture readiness
 
 The primary document must reach `DOMContentLoaded`. A configured `load` or `networkidle` wait is then bounded to 10 seconds. Timeout produces a capture warning and processing continues from the parsed document.

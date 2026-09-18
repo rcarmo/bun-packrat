@@ -21,6 +21,7 @@ The EPUB suite calls `epubcheck` when it is installed. The compliance test skips
 | `tests/archivebox-pdf.test.ts` | Original-PDF classification, enrichment, verification and resumption. |
 | `tests/assets.test.ts` | Link normalisation, image selection and tracking-pixel removal. |
 | `tests/canonical.test.ts` | MHTML detection, MIME decoding, raster-part rewriting, body codecs and safe rendering. |
+| `tests/config.test.ts` | Environment parsing, defaults and validation. |
 | `tests/db.test.ts` | Schema, migrations and database helpers. |
 | `tests/epub.test.ts` | EPUB 3 structure and optional `epubcheck` compliance. |
 | `tests/features.test.ts` | Deletion, pagination, index actions and Markdown provenance. |
@@ -29,7 +30,9 @@ The EPUB suite calls `epubcheck` when it is installed. The compliance test skips
 | `tests/pdf.test.ts` | Direct-PDF capture, bounded extraction, deduplication and range delivery. |
 | `tests/phase1.test.ts` | Extraction, sanitisation, storage, readiness and image recovery. |
 | `tests/queue.test.ts` | Job lifecycle, attempts, recovery and tags. |
+| `tests/recompress.test.ts` | Oversized MHTML raster-image recompression and candidate selection. |
 | `tests/sanitize.test.ts` | Hostile HTML input and active-content removal. |
+| `tests/storage.test.ts` | Body compression policy and storage-format behaviour. |
 | `tests/upgrade.test.ts` | Schema upgrade, advantageous storage migration, interruption/resumption and standalone backup restore. |
 | `tests/url.test.ts` | URL normalisation and SSRF address classification. |
 
@@ -54,7 +57,7 @@ Unit tests do not replace live capture checks. Before changing capture readiness
 9. the page has no horizontal overflow;
 10. `verify --all` passes against the disposable database.
 
-### v0.3.0 capture and storage checks
+### Capture and storage checks introduced in v0.3.0
 
 The release gate must also prove:
 
@@ -73,3 +76,15 @@ The release gate must also prove:
 13. `--no-orphans` removes Chromium descendants after watchdog exit.
 
 Production data must be backed up and verified before deployment or storage migration.
+
+### v0.3.1 homepage checks
+
+The release gate also covers:
+
+1. the unfiltered homepage returns `Cache-Control: no-store` and refreshes after a commit from a separate SQLite connection;
+2. filtered pages render current data after an external write;
+3. successful capture settlement invokes the homepage callback.
+
+Code review also covered batched index queries, generation and `PRAGMA data_version` checks around rendering, live query-bearing pages and asynchronous settlement notification. These cases are implementation and review evidence; the current tests do not count SQL statements or inject a write into an in-flight render.
+
+The v0.3.1 production acceptance check stopped and started the deployed container, then retried only connection refusals. The first accepted unfiltered homepage response completed in 195.793 ms; the next response completed in 3.223 ms. A successful test capture appeared in the next warmed homepage, and its deletion was reflected on the following request.

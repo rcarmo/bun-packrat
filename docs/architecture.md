@@ -1,6 +1,6 @@
 # Architecture
 
-Packrat v0.3.0 stores successful web captures as Chromium MHTML in SQLite and stores direct PDF responses byte-for-byte in separate content-addressed BLOB rows. Oversized snapshots may replace embedded JPEG, PNG and WebP MIME parts through a fixed two-pass fallback, and capture bodies use zstd only when it reduces stored bytes.
+Packrat v0.3.1 stores successful web captures as Chromium MHTML in SQLite and stores direct PDF responses byte-for-byte in separate content-addressed BLOB rows. Oversized snapshots may replace embedded JPEG, PNG and WebP MIME parts through a fixed two-pass fallback, and capture bodies use zstd only when it reduces stored bytes.
 
 ## Components
 
@@ -8,6 +8,7 @@ Packrat v0.3.0 stores successful web captures as Chromium MHTML in SQLite and st
 flowchart LR
     U[Web UI, API, bookmarklet or CLI] --> S[Bun HTTP server]
     S --> D[(SQLite with FTS5)]
+    S --> C[Default homepage response cache]
     S --> Q[In-process job queue]
     Q --> P[Playwright capture worker]
     P --> W[Public web page]
@@ -45,6 +46,8 @@ sequenceDiagram
     Q->>Q: Hash accepted bytes and keep zstd only if smaller
     Q->>D: Store MHTML, codec and derived metadata
     Q->>D: Mark job succeeded
+    Q->>S: Notify capture settlement
+    S->>S: Invalidate and rebuild default homepage
 ```
 
 `DOMContentLoaded` is required. `load` or `networkidle`, when configured, is a settling signal bounded to 10 seconds. A page that keeps analytics or media connections open can still produce a valid capture.
@@ -104,7 +107,15 @@ SQLite uses WAL mode and foreign-key enforcement.
 | `captures_fts` | FTS5 index over title, site, author, URL, domain and body text. |
 | `schema_migrations` | Applied schema versions. |
 
-Migrations `001_initial.sql` through `007_storage_migration_state.sql` define the v0.3.0 schema. Migration `005` adds body-format metadata and FTS trigger updates. Migration `006` adds source-PDF storage, associations, extraction state and ArchiveBox PDF-enrichment outcomes. Migration `007` adds durable per-row storage-migration outcomes. The storage migration verifies and recompresses one body at a time.
+Migrations `001_initial.sql` through `007_storage_migration_state.sql` define the current schema. Migration `005` adds body-format metadata and FTS trigger updates. Migration `006` adds source-PDF storage, associations, extraction state and ArchiveBox PDF-enrichment outcomes. Migration `007` adds durable per-row storage-migration outcomes. The storage migration verifies and recompresses one body at a time.
+
+## Archive index cache
+
+The unfiltered `GET /` response and its `/index.html` alias share the only persistently cached index entry. Packrat batches tag and deletion-impact lookups for the visible captures, renders the page once and keeps the resulting HTML in process memory. Search, filter, pagination and bookmarklet-prefilled `?archive=` pages render directly from current SQLite state.
+
+Local archive mutations increment an in-process generation and discard the cached response. `PRAGMA data_version` detects commits from other SQLite connections. A render is published only if both values remain unchanged from the start through the end of rendering; callers waiting for an invalidated render retry instead of receiving stale HTML.
+
+Packrat starts serving before it warms the default page. It also invalidates and rebuilds the page after a capture job succeeds or fails. This callback is asynchronous and runs after the job reaches its terminal state, so rendering does not hold a worker slot or delay queue turnover. Index responses retain `Cache-Control: no-store`; the resident cache is an internal server optimisation and has no time-to-live.
 
 ## Offline rendering policy
 
@@ -116,7 +127,7 @@ Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 
 
 Full-page and Article views make no external requests. The rendered Markdown reader resolves images to authenticated, same-origin `/captures/:id/images/:index` resources when matching archived bytes are available. Missing archived images remain alt text unless the user enables the privacy-gated remote fallback. Its `.raw` companion exposes the same mixed archived/fallback Markdown source. The agent-facing API Markdown retains original URLs, while Markdown ZIP exports use offline relative assets.
 
-The Markdown archived-image decoder uses a bounded 32 MiB in-process least-recently-used cache. A Bun `memoryPressure` handler clears this cache. The decoder does not create persistent derived files or alter stored HTML, MHTML or PDF bytes.
+The Markdown archived-image decoder uses a bounded 32 MiB in-process least-recently-used cache. The decoder does not create persistent derived files or alter stored HTML, MHTML or PDF bytes.
 
 ## Source layout
 
@@ -128,5 +139,5 @@ The Markdown archived-image decoder uses a bounded 32 MiB in-process least-recen
 | `src/export/` | HTML, Markdown, EPUB and rendered PDF derivation. |
 | `src/pdf/` | Bounded source-PDF download and isolated PDF.js extraction. |
 | `src/cli/` | Command-line interface. |
-| `src/server.ts` | HTTP routes and server-rendered UI. |
+| `src/server.ts` | HTTP routes, server-rendered UI and the version-checked default homepage cache. |
 | `tests/` | Unit and integration tests. |

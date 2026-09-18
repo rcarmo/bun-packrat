@@ -1,6 +1,6 @@
 # HTTP API
 
-This reference describes the v0.3.0 HTTP API.
+This reference describes the v0.3.1 HTTP API.
 
 The HTTP API uses the same Basic authentication policy as the web UI. Read-only routes accept authenticated cross-origin clients. Browser-originated mutations must be same-origin; command-line clients without browser origin headers are accepted.
 
@@ -106,10 +106,12 @@ The `confirm` value must be the capture ID as a string or the JSON value `true`.
 | `GET /captures/:id/markdown?remote=1` | Markdown view with archived images plus original remote fallback for images absent from the archive. |
 | `GET /captures/:id/markdown.raw` | Raw Markdown using same-origin archived image URLs where available and original URLs for missing images. |
 | `GET /captures/:id?raw=1` | Byte-exact canonical MHTML attachment for fresh captures or byte-exact stored HTML for legacy captures. |
-| `GET|HEAD /captures/:id/source.pdf` | Inline byte-exact source PDF with single-byte `Range` support. Add `?download=1` for attachment disposition. |
+| `GET|HEAD /captures/:id/source.pdf` | Inline byte-exact source PDF with one byte-range request. Add `?download=1` for attachment disposition. |
 | `GET|HEAD /captures/:id/source.txt` | Extracted source-PDF text. Encrypted, timed-out or failed extraction returns `409`; verified image-only PDFs return empty text. |
 
-Capture rows show the source domain, capture date, uncompressed canonical body size and author or site when available. Storage mode appears only for exceptional records such as metadata-only, imported or legacy article captures. A capture warning reports when the oversized colour or greyscale image fallback produced the stored MHTML. Storage compression remains internal and has no effect on response formats. Asset counts are not computed while rendering the list.
+Capture rows show the source domain, capture date, uncompressed canonical body size and author or site when available. Storage mode appears only for exceptional records such as metadata-only, imported or legacy article captures. A capture warning reports when the oversized colour or greyscale image fallback produced the stored MHTML. Storage compression remains internal and has no effect on response formats. Asset counts are not computed while rendering the list. Tag and deletion-impact metadata for the visible page use batched SQLite queries.
+
+The unfiltered `GET /` response has one version-checked in-process cache entry. Search, filter, pagination and bookmarklet-prefilled pages always render from current SQLite state. Local mutations invalidate the entry, external SQLite writes are detected through `PRAGMA data_version`, and a capture job rebuilds the entry asynchronously after it succeeds or fails. Index responses continue to use `Cache-Control: no-store`; this optimisation does not grant clients permission to cache them.
 
 The web filter form omits capture mode because it is an internal representation detail. The `mode` query parameter remains available through `GET /api/captures` for automation and diagnostics.
 
