@@ -34,9 +34,9 @@ runMigrations(db);
 const markdownAssetCache = new Map<number, { assets: MarkdownAsset[]; bytes: number; touchedAt: number }>();
 const MAX_MARKDOWN_ASSET_CACHE_BYTES = 32 * 1024 * 1024;
 
-type CachedIndexResponse = { body: string; status: number; headers: Array<[string, string]>; dataVersion: number };
-const indexResponseCache = new Map<string, Promise<CachedIndexResponse>>();
-const MAX_INDEX_RESPONSE_CACHE_ENTRIES = 16;
+type CachedIndexResponse = { body: string; status: number; headers: Array<[string, string]>; dataVersion: number; generation: number };
+let defaultIndexResponseCache: Promise<CachedIndexResponse> | null = null;
+let indexCacheGeneration = 0;
 
 // Start job queue
 const queue = new JobQueue({
@@ -599,48 +599,50 @@ function renderArticleDocument(html: string): string {
   return html.includes('</head>') ? html.replace(/<\/head>/i, `${articleCss}</head>`) : html.replace(/<body/i, `<head>${articleCss}</head><body`);
 }
 
-function indexCacheKey(url: URL): string {
-  const params = new URLSearchParams(url.searchParams);
-  params.delete('archive');
-  params.sort();
-  return params.toString();
-}
-
 function invalidateIndexResponseCache(): void {
-  indexResponseCache.clear();
+  indexCacheGeneration++;
+  defaultIndexResponseCache = null;
 }
 
 async function renderCachedIndex(db: Database, url: URL): Promise<Response> {
-  // Bookmarklet-prefilled forms are user-specific and intentionally bypass the
-  // shared cache; normal filtered result pages are safe to cache briefly.
-  if (url.searchParams.has('archive')) return renderIndex(db, url);
-  const key = indexCacheKey(url);
-  const currentDataVersion = sqliteDataVersion(db);
-  let pending = indexResponseCache.get(key);
-  if (pending) {
-    const existing = await pending;
-    if (existing.dataVersion !== currentDataVersion) {
-      indexResponseCache.delete(key);
-      pending = undefined;
+  // Only the common unfiltered landing page remains resident. Search, filters,
+  // pagination and bookmarklet-prefilled forms always render against current
+  // state and cannot accumulate user-specific cache entries.
+  if (url.searchParams.size > 0) return renderIndex(db, url);
+  for (;;) {
+    let pending = defaultIndexResponseCache;
+    if (!pending) {
+      pending = renderVersionConsistentDefaultIndex(db, url);
+      defaultIndexResponseCache = pending;
+      pending.catch(() => {
+        if (defaultIndexResponseCache === pending) defaultIndexResponseCache = null;
+      });
     }
+    const cached = await pending;
+    const currentVersion = sqliteDataVersion(db);
+    if (cached.generation === indexCacheGeneration && cached.dataVersion === currentVersion) {
+      return new Response(cached.body, { status: cached.status, headers: cached.headers });
+    }
+    if (defaultIndexResponseCache === pending) defaultIndexResponseCache = null;
   }
-  if (!pending) {
-    pending = renderIndex(db, url).then(async (response) => ({
-      body: await response.text(),
+}
+
+async function renderVersionConsistentDefaultIndex(db: Database, url: URL): Promise<CachedIndexResponse> {
+  for (;;) {
+    const generation = indexCacheGeneration;
+    const beforeVersion = sqliteDataVersion(db);
+    const response = await renderIndex(db, url);
+    const body = await response.text();
+    const afterVersion = sqliteDataVersion(db);
+    if (generation !== indexCacheGeneration || beforeVersion !== afterVersion) continue;
+    return {
+      body,
       status: response.status,
       headers: Array.from(response.headers as unknown as Iterable<[string, string]>),
-      dataVersion: sqliteDataVersion(db),
-    }));
-    indexResponseCache.set(key, pending);
-    pending.catch(() => indexResponseCache.delete(key));
-    while (indexResponseCache.size > MAX_INDEX_RESPONSE_CACHE_ENTRIES) {
-      const oldest = indexResponseCache.keys().next().value;
-      if (oldest == null) break;
-      indexResponseCache.delete(oldest);
-    }
+      dataVersion: afterVersion,
+      generation,
+    };
   }
-  const cached = await pending;
-  return new Response(cached.body, { status: cached.status, headers: cached.headers });
 }
 
 function sqliteDataVersion(db: Database): number {

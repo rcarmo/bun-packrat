@@ -125,22 +125,20 @@ export class JobQueue {
 
       finishJob(this.db, job.id, 'succeeded', result);
       console.log(JSON.stringify({ event: 'job.succeeded', jobId: job.id, kind: job.kind }));
-      if (job.kind === 'capture') await this.notifyCaptureSettled(job.id, Number(result.captureId) || null, 'succeeded');
+      if (job.kind === 'capture') this.notifyCaptureSettled(job.id, Number(result.captureId) || null, 'succeeded');
     } catch (err: any) {
       const errMsg = err?.message ?? String(err);
       finishJob(this.db, job.id, 'failed', undefined, errMsg);
       console.error(JSON.stringify({ event: 'job.failed', jobId: job.id, kind: job.kind, error: errMsg }));
-      if (job.kind === 'capture') await this.notifyCaptureSettled(job.id, null, 'failed');
+      if (job.kind === 'capture') this.notifyCaptureSettled(job.id, null, 'failed');
     }
   }
 
-  private async notifyCaptureSettled(jobId: number, captureId: number | null, status: 'succeeded' | 'failed'): Promise<void> {
+  private notifyCaptureSettled(jobId: number, captureId: number | null, status: 'succeeded' | 'failed'): void {
     if (!this.onCaptureSettled) return;
-    try {
-      await this.onCaptureSettled({ jobId, captureId, status });
-    } catch (error: any) {
+    void Promise.resolve(this.onCaptureSettled({ jobId, captureId, status })).catch((error: any) => {
       console.error(JSON.stringify({ event:'queue.capture_settled_hook_failed', jobId, captureId, status, error:error?.message ?? String(error) }));
-    }
+    });
   }
 
   private async handleCapture(

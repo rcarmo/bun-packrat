@@ -112,6 +112,15 @@ describe('agent capture API', () => {
     const refreshed = await fetch(base);
     expect(refreshed.status).toBe(200);
     expect(await refreshed.text()).toContain(`href="/captures/${addedId}/article">Cache refresh fixture</a>`);
+
+    const filtered = await fetch(`${base}/?status=all`);
+    const filteredHtml = await filtered.text();
+    const secondDb = openDatabase(dbPath);
+    const pendingUrl = getOrCreateUrl(secondDb, 'https://example.com/filter-refresh', 'https://example.com/filter-refresh');
+    const pendingId = insertCapture(secondDb, { url_id:pendingUrl.id,source_url:pendingUrl.original,final_url:pendingUrl.original,html:null,compression:'none',content_hash:null,html_size:null,title:'Filter refresh fixture',author:null,site_name:null,published_at:null,excerpt:null,lang:null,extracted_text:null,mode:'full_page',status:'pending',capture_tool:'test',warnings:null });
+    secondDb.close();
+    expect(filteredHtml).not.toContain('Filter refresh fixture');
+    expect(await fetch(`${base}/?status=all`).then((response) => response.text())).toContain(`href="/captures/${pendingId}/article">Filter refresh fixture</a>`);
   });
 
   test('exposes the original URL in capture listings and reading views', async () => {

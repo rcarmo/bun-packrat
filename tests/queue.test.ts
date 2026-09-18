@@ -143,6 +143,7 @@ describe('job lifecycle', () => {
     };
     const job = claimNextJob(db, ['capture'])!;
     await queueInternals.runJob(job);
+    await Bun.sleep(0);
     expect(notifications).toEqual([{ jobId, captureId, status:'succeeded' }]);
   });
 });
