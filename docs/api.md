@@ -177,17 +177,42 @@ Add or remove one capture-tag association by sending the same JSON body with `PO
 
 Removing a tag's final capture association also removes the unused tag from the global tag index. The web index exposes this through **Manage tags…** in each capture's **More** menu.
 
-## Service status and bookmarklet
+## Service status
 
 ```text
 GET /status
 GET /api/status
-GET /bookmarklet.js
 ```
 
 `/status` is the human-readable queue monitor. It refreshes every ten seconds and shows queue totals, active workers, target URLs, attempts, timings, capture links and readable errors for active and recent jobs.
 
 `/api/status` is the machine-readable status response. It reports capture counts, queue depth, active workers, capture duration, import counts and database size.
+
+## Bookmarklet
+
+```text
+GET /bookmarklet.js
+```
+
+This authenticated endpoint returns JavaScript (`text/javascript`), not a `javascript:` bookmark URL. The script navigates the current tab to `<PACKRAT_BASE_URL>/?archive=<encoded source URL>`, using `encodeURIComponent(location.href)` for the page being bookmarked. The `archive` query parameter prefills the **Archive a URL** form; it does not queue a capture.
+
+For the default `PACKRAT_BASE_URL` of `http://localhost:3047`, create a browser bookmark and paste this entire single line into its URL/location field:
+
+```text
+javascript:void%28%28%29%3D%3E%7Blocation.href%3D%22http%3A%2F%2Flocalhost%3A3047%2F%3Farchive%3D%22%2BencodeURIComponent%28location.href%29%7D%29%28%29
+```
+
+The decoded JavaScript is:
+
+```javascript
+void (() => {
+  location.href = "http://localhost:3047/?archive=" + encodeURIComponent(location.href);
+})();
+```
+
+For a different deployment, replace `http%3A%2F%2Flocalhost%3A3047` in the encoded bookmarklet with your URL-encoded `PACKRAT_BASE_URL` without its trailing slash. Alternatively, retrieve `/bookmarklet.js` from that deployment, wrap its contents in `void (() => { ... })()`, URL-encode that JavaScript and prefix it with `javascript:`. The `void` wrapper prevents the bookmarklet's result from replacing the current document.
+
+Activate the bookmark while viewing an HTTP or HTTPS page, authenticate to Packrat if prompted, then click **Archive URL** in the prefilled form. The form makes a same-origin `POST /api/captures` with `{"url":"<source URL>"}`, receives `202 Accepted` with a `jobId`, and polls `GET /api/jobs/:id` for progress. A bookmarklet must not POST directly to Packrat from the source page: browser-originated cross-origin mutations are rejected with `403 Forbidden`.
 
 ## Markdown reading images
 
@@ -210,9 +235,3 @@ bun run src/cli/index.ts import archivebox-pdfs --data-root /srv/archivebox/data
 ```
 
 The classifier requires one successful `wget` output, one successful `headers` output reporting `application/pdf`, a `%PDF-` signature and a matching recorded `Content-Length` when present. ArchiveBox's generated `pdf` extractor output is ignored. Every provenance row receives an independent, resumable enrichment outcome.
-
-Save the bookmarklet payload as:
-
-```text
-javascript:(()=>{/* contents of /bookmarklet.js */})()
-```
